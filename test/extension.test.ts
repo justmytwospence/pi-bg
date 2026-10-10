@@ -165,6 +165,41 @@ describe("pi-bg", () => {
     await x.shutdown();
   }, 15_000);
 
+  it("another source that throws cannot break the dialog: its rows are left out, its view failing returns to the list", async () => {
+    const { ACTIVITY_SECTION } = await import("../src/activity.ts");
+    const x = await load();
+    await x.call("bg_run", { command: "sleep 3", kind: "job", name: "mine" });
+    let broken = true;
+    const flaky = {
+      id: "subagents",
+      title: "subagents",
+      entries: () => {
+        if (broken) throw new Error("boom");
+        return [{ key: "r1", label: "scout", detail: "look", status: "running", stats: "1s", startedAt: 0 }];
+      },
+      open: async () => {
+        throw new Error("no view");
+      },
+      stop: () => {
+        throw new Error("no stop");
+      },
+    };
+    x.pi.events.emit(ACTIVITY_SECTION, { section: flaky });
+    void x.commands.get("tasks").handler("", x.ctx);
+    await until(() => x.opened.length === 1);
+    expect(x.overlay(0).render(100).join("\n")).toContain("mine");
+    broken = false;
+    const dialog = x.overlay(0);
+    dialog.handleInput("\x1b[B");
+    dialog.handleInput("x");
+    dialog.handleInput("x");
+    dialog.handleInput("\r");
+    // The failed view returns to the dialog.
+    await until(() => x.opened.length === 2);
+    x.overlay(1).handleInput("\x1b");
+    await x.shutdown();
+  });
+
   it("a click on the pill opens the dialog", async () => {
     const x = await load();
     await x.call("bg_run", { command: "sleep 3", kind: "job", name: "clicky" });

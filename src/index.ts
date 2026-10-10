@@ -128,7 +128,7 @@ export default function piBg(pi: ExtensionAPI) {
   const pill = new PillView({
     pill: (now) => pillOf(now),
     open: () => {
-      if (ctx) void openDialog(ctx.ui);
+      if (ctx) openDialog(ctx.ui).catch(() => undefined);
     },
   });
   const bindPill = () => pill.setUI(attached && tui() && !hosted ? (ctx?.ui as any) : undefined);
@@ -714,7 +714,14 @@ export default function piBg(pi: ExtensionAPI) {
       );
       if (!picked) return;
       initialKey = picked.key;
-      if (picked.kind === "open") await picked.section.open(picked.key, ui);
+      if (picked.kind === "open") {
+        // Another source's view (pi-subagents' conversation) may fail; the dialog comes back regardless.
+        try {
+          await picked.section.open(picked.key, ui);
+        } catch {
+          // Shown nothing; back to the list.
+        }
+      }
       else if (picked.kind === "rerun") {
         const t = reg.find(picked.key);
         if (t && ctx) initialKey = startUserTask(ctx, t.command).id;

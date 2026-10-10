@@ -37,6 +37,15 @@ type Row = { kind: "heading"; text: string } | { kind: "entry"; section: Activit
 
 type TuiLike = Pick<TUI, "requestRender"> & { terminal: { rows: number } };
 
+/** Runs another source's code from a key handler, where a throw would escape into pi's input loop. */
+const guard = (fn: () => void) => {
+  try {
+    fn();
+  } catch {
+    // Ignored: the source's own problem.
+  }
+};
+
 const icon = (status: ActivityEntry["status"], theme: Theme) =>
   status === "running" ? theme.fg("accent", "●") : status === "done" ? theme.fg("success", "✓") : status === "stopped" ? theme.fg("muted", "■") : theme.fg("error", "✗");
 
@@ -44,7 +53,13 @@ const icon = (status: ActivityEntry["status"], theme: Theme) =>
 export function dialogRows(sections: ActivitySection[], now: number): Row[] {
   const rows: Row[] = [];
   for (const section of sections) {
-    const entries = section.entries(now);
+    let entries: ActivityEntry[];
+    try {
+      entries = section.entries(now);
+    } catch {
+      // Another extension's bug must not break the dialog (it renders on a timer).
+      continue;
+    }
     if (!entries.length) continue;
     const running = entries.filter((e) => e.status === "running").length;
     if (rows.length) rows.push({ kind: "blank" });
@@ -111,10 +126,10 @@ export class TasksDialog implements Component {
       if (cur.entry.status === "running") {
         if (!cur.section.stop) return;
         // Two presses, so a stray x cannot kill a task.
-        if (armed) cur.section.stop(cur.entry.key);
+        if (armed) guard(() => cur.section.stop?.(cur.entry.key));
         else this.stopArmed = true;
       } else {
-        cur.section.dismiss?.(cur.entry.key);
+        guard(() => cur.section.dismiss?.(cur.entry.key));
         this.refresh();
       }
     } else if (matchesKey(data, "r") && cur && cur.section.id === this.options.ownId) return this.close({ kind: "rerun", key: cur.entry.key });
