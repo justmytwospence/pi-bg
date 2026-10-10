@@ -52,7 +52,9 @@ Laid out the way Claude Code does it (2.1.296), with the same keys:
   failure you have not seen is there (until your next message, or `x` in the dialog). `↓` at an
   empty prompt selects it, Enter (or a click, in fullscreen mode) opens the dialog, Esc or `↑` goes
   back. Nothing above the prompt.
-- **Background-tasks dialog** (`/tasks`, also `/bashes`, `/ps`, `/bg`): every task, running first,
+- **Background-tasks view** (`/tasks`, also `/bashes`, `/ps`, `/bg`): it takes over the whole
+  screen, as Claude Code's and Codex's subagent views do, under an accent-colored banner
+  (`◀ esc · Background tasks · not your main session`); Esc goes back. Every task, running first,
   then what ended (newest first), each with its command and state (`waiting` while a `bg_wait` is on
   it, `ready` for a service). ↑↓ select; Enter opens the task's live log (↑↓ PgUp/PgDn g/G scroll,
   `x` twice stops, Esc comes back to the dialog); `x` twice stops a running task, `x` on an ended one

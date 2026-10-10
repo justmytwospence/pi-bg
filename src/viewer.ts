@@ -1,12 +1,12 @@
-// `/bg`'s log view: an overlay following one task's log. ↑↓ (or j/k), PgUp/PgDn, Home/End scroll
+// A task's log, full screen (frame.ts): it follows the log as it grows. ↑↓ (or j/k), PgUp/PgDn, Home/End scroll
 // (scrolling to the end follows again); `x` twice stops a running task; Esc or q closes.
 import { type Component, type TUI, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { header } from "./format.ts";
+import { banner, bottom, row as frameRow, rule as frameRule } from "./frame.ts";
 import { tail } from "./log.ts";
 import type { Task } from "./registry.ts";
 
-const HEIGHT_PCT = 80;
-/** Border, two header lines, two rules, footer, border. */
+/** Banner, two header lines, two rules, hints, bottom border. */
 const CHROME = 7;
 const MAX_LINES = 5_000;
 
@@ -50,7 +50,7 @@ export class LogViewer implements Component {
   }
 
   private viewport(): number {
-    return Math.max(3, Math.floor((this.tui.terminal.rows * HEIGHT_PCT) / 100) - CHROME);
+    return Math.max(3, this.tui.terminal.rows - CHROME);
   }
 
   handleInput(data: string): void {
@@ -92,10 +92,10 @@ export class LogViewer implements Component {
     if (width < 10) return [];
     const th = this.theme;
     const inner = width - 4;
-    const row = (s: string) => `${th.fg("border", "│")} ${truncateToWidth(s, inner, "…", true)} ${th.fg("border", "│")}`;
-    const rule = row(th.fg("dim", "─".repeat(inner)));
+    const row = (s: string) => frameRow(s, width, th);
+    const rule = frameRule(width, th);
     const t = this.task;
-    const out = [th.fg("border", `╭${"─".repeat(width - 2)}╮`)];
+    const out = [banner(`Log of ${t.name}`, width, th)];
     const mark = t.status === "running" ? th.fg("accent", "●") : t.status === "done" ? th.fg("success", "✓") : th.fg("error", "✗");
     out.push(row(`${mark} ${th.bold(header(t))}`));
     out.push(row(th.fg("dim", `$ ${t.command.replace(/\s+/gu, " ")}`)));
@@ -111,10 +111,10 @@ export class LogViewer implements Component {
     const position = this.lines.length <= page ? "all" : `${Math.round(((start + page) / this.lines.length) * 100)}%`;
     actions.push(th.fg("dim", `${this.lines.length} lines · ${position}${this.follow && t.status === "running" ? " · following" : ""}`));
     const left = actions.join(th.fg("dim", " · "));
-    const nav = th.fg("dim", "↑↓ PgUp/PgDn g/G · Esc close");
+    const nav = th.fg("dim", "↑↓ PgUp/PgDn g/G · esc back");
     const gap = inner - visibleWidth(left) - visibleWidth(nav);
     out.push(row(gap >= 1 ? `${left}${" ".repeat(gap)}${nav}` : left));
-    out.push(th.fg("border", `╰${"─".repeat(width - 2)}╯`));
+    out.push(bottom(width, th));
     return out;
   }
 

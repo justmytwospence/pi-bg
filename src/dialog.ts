@@ -5,9 +5,9 @@
 // one; `r` reruns a shell; `f` follows a shell's log in a herdr split; Esc, q or ← closes.
 import { type Component, type TUI, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ActivityEntry, ActivitySection } from "./activity.ts";
+import { banner, bottom, row as frameRow, rule as frameRule } from "./frame.ts";
 
-const HEIGHT_PCT = 80;
-/** Border, title, rule, rule, hints, border. */
+/** Banner, summary, rule, rule, hints, bottom border. */
 const CHROME = 6;
 const TICK_MS = 1_000;
 
@@ -145,19 +145,19 @@ export class TasksDialog implements Component {
   }
 
   private viewport(): number {
-    return Math.max(3, Math.floor((this.tui.terminal.rows * HEIGHT_PCT) / 100) - CHROME);
+    return Math.max(3, this.tui.terminal.rows - CHROME);
   }
 
   render(width: number): string[] {
     if (width < 12) return [];
     const th = this.theme;
     const inner = width - 4;
-    const row = (s: string) => `${th.fg("border", "│")} ${truncateToWidth(s, inner, "…", true)} ${th.fg("border", "│")}`;
-    const rule = row(th.fg("dim", "─".repeat(inner)));
-    const out = [th.fg("border", `╭${"─".repeat(width - 2)}╮`)];
+    const row = (s: string) => frameRow(s, width, th);
+    const rule = frameRule(width, th);
+    const out = [banner("Background tasks", width, th)];
     const entries = this.entryRows();
     const running = entries.filter((r) => r.entry.status === "running").length;
-    out.push(row(`${th.bold("Background tasks")}${th.fg("dim", entries.length ? `  ${running} running · ${entries.length - running} ended` : "")}`));
+    out.push(row(th.fg("dim", entries.length ? `${running} running · ${entries.length - running} ended` : "Nothing running")));
     out.push(rule);
 
     const lines: string[] = [];
@@ -183,7 +183,8 @@ export class TasksDialog implements Component {
     if (selectedLine < this.scroll) this.scroll = selectedLine;
     if (selectedLine >= this.scroll + page) this.scroll = selectedLine - page + 1;
     this.scroll = Math.max(0, Math.min(this.scroll, Math.max(0, lines.length - page)));
-    for (let i = 0; i < Math.min(page, lines.length); i++) out.push(row(lines[this.scroll + i] ?? ""));
+    // Every row, blank ones too: the view covers the whole screen.
+    for (let i = 0; i < page; i++) out.push(row(lines[this.scroll + i] ?? ""));
 
     out.push(rule);
     const cur = this.current();
@@ -197,9 +198,9 @@ export class TasksDialog implements Component {
         if (this.options.canFollow) hints.push("f follow in a split");
       }
     }
-    hints.push("esc close");
+    hints.push("esc back to your session");
     out.push(row(th.fg("dim", hints.join(" · "))));
-    out.push(th.fg("border", `╰${"─".repeat(width - 2)}╯`));
+    out.push(bottom(width, th));
     return out;
   }
 

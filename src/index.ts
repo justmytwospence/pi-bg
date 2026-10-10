@@ -31,6 +31,7 @@ import { bounded, grep, head, tail } from "./log.ts";
 import { type Kind, type Task, type TaskEvent, parsePattern, registry } from "./registry.ts";
 import { ACTIVITY_CHANGED, ACTIVITY_GONE, ACTIVITY_HOST, ACTIVITY_SECTION, type ActivityEntry, type ActivityPill, type ActivitySection } from "./activity.ts";
 import { type DialogResult, TasksDialog } from "./dialog.ts";
+import { FULL_SCREEN } from "./frame.ts";
 import { PillView } from "./pill.ts";
 import { LogViewer } from "./viewer.ts";
 
@@ -682,7 +683,7 @@ export default function piBg(pi: ExtensionAPI) {
   const openLog = async (ui: ExtensionContext["ui"], t: Task) => {
     await ui.custom<void>(
       (tui, theme, _kb, done) => new LogViewer(tui as any, theme as any, t, t.status === "running" ? () => void stopTask(t, "user") : undefined, () => done(undefined)),
-      { overlay: true, overlayOptions: { anchor: "center", width: "90%", maxHeight: "80%" } },
+      FULL_SCREEN,
     );
   };
 
@@ -710,7 +711,7 @@ export default function piBg(pi: ExtensionAPI) {
       const sections = () => [section, ...others.values()];
       const picked: DialogResult = await ui.custom<DialogResult>(
         (tui, theme, _kb, done) => new TasksDialog(tui as any, theme as any, { sections, ownId: section.id, canFollow: herdrActive, initialKey }, done),
-        { overlay: true, overlayOptions: { anchor: "center", width: "90%", maxHeight: "80%" } },
+        FULL_SCREEN,
       );
       if (!picked) return;
       initialKey = picked.key;

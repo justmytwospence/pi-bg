@@ -124,7 +124,10 @@ describe("pi-bg", () => {
     expect(x.opened).toHaveLength(1);
     const dialog = x.overlay(0);
     const lines: string[] = dialog.render(100);
-    expect(lines[1]).toContain("Background tasks  1 running · 0 ended");
+    expect(lines[0]).toContain("◀ esc · Background tasks · not your main session");
+    expect(lines[1]).toContain("1 running · 0 ended");
+    // It covers the screen.
+    expect(lines).toHaveLength(40);
     expect(lines.join("\n")).toMatch(/Shells · 1 running[^\n]*\n[^\n]*❯ ● flaky  sleep 2; echo bad; exit 3 +0:0\d/u);
     dialog.handleInput("\x1b");
     await until(() => x.sent.length > 0, 5_000);
