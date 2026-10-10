@@ -1,12 +1,15 @@
-// The activity protocol: how pi-bg and pi-subagents share the space under the prompt and one
-// background-tasks dialog when both are installed, the way Claude Code lays them out. Each works
-// alone. This file is copied verbatim into both repos (pi-bg and pi-subagents); change it in both.
+// The activity protocol: how pi-bg, pi-subagents and pi-marimo share the space under the prompt and
+// one background-tasks dialog, the way Claude Code lays them out. Each works alone. This file is
+// copied verbatim into pi-bg, pi-subagents and pi-marimo; change it in all three.
 //
-// Each extension offers its background work as a *source*. With both installed:
+// Each extension offers its background work as a *source*:
 // - pi-subagents is the host under the prompt: its list (FleetView, Claude Code's subagent panel)
-//   ends with pi-bg's pill (`2 shells`), and calls `setHosted(true)` so pi-bg draws no pill of its
-//   own. Enter on the pill opens pi-bg's dialog.
-// - pi-bg's `/tasks` dialog lists every source's entries: its shells, and pi-subagents' runs.
+//   ends with the other sources' pills (`2 shells`, `1 notebook`), and calls `setHosted(true)` on
+//   each so they draw no pill of their own. Enter on a pill opens that source's dialog.
+// - Without pi-subagents, pi-bg hosts: its pill also counts the other sources' work
+//   (`2 shells · 1 notebook`), calling `setHosted(true, "pi-bg")` on them.
+// - pi-bg's `/tasks` dialog lists every source's entries: its shells, pi-subagents' runs,
+//   pi-marimo's notebooks.
 //
 // Over pi's event bus:
 //   activity:section  { section }  a source is offered, at its owner's session start and whenever
@@ -65,8 +68,11 @@ export interface ActivitySection {
   pill?(now: number): ActivityPill | undefined;
   /** Opens the source's own dialog (pi-bg's background-tasks dialog). */
   openDialog?(ui: unknown): Promise<void>;
-  /** A host shows this source under the prompt (true) or stopped doing so (false). */
-  setHosted?(hosted: boolean): void;
+  /**
+   * A host shows this source under the prompt (true) or stopped doing so (false). `host` names it
+   * (pi-subagents leaves it out): a source draws its own pill only while no host shows it.
+   */
+  setHosted?(hosted: boolean, host?: string): void;
 }
 
 /**

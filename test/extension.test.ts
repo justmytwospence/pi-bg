@@ -343,4 +343,32 @@ describe("pi-bg", () => {
     expect(x.textOf(await x.call("bg_logs", {}))).not.toMatch(/idle/u);
     await x.shutdown();
   }, 15_000);
+
+  it("hosts another source's pill while no one hosts it: one pill, `1 shell · 1 notebook`; hosted itself, it lets go", async () => {
+    const x = await load();
+    const calls: Array<[boolean, string | undefined]> = [];
+    let busy = true;
+    const guest = {
+      id: "marimo",
+      title: "notebooks",
+      noun: "notebook",
+      entries: () => [],
+      open: async () => undefined,
+      pill: () => (busy ? { label: "1 notebook" } : undefined),
+      setHosted: (on: boolean, host?: string) => void calls.push([on, host]),
+    };
+    x.pi.events.emit("activity:section", { section: guest });
+    expect(calls).toEqual([[true, "pi-bg"]]);
+    expect(x.widgetLines()).toEqual([" 1 notebook "]);
+    await x.call("bg_run", { command: "sleep 5", kind: "job", name: "s" });
+    expect(x.widgetLines()).toEqual([" 1 shell · 1 notebook "]);
+    busy = false;
+    x.pi.events.emit("activity:changed", { id: "marimo" });
+    expect(x.widgetLines()).toEqual([" 1 shell "]);
+    // pi-subagents hosts us: the guest goes back to it.
+    const ours = x.emitted.filter((e) => e.channel === "activity:section").map((e) => e.data.section).find((s: any) => s.id === "bg");
+    ours.setHosted(true);
+    expect(calls.at(-1)).toEqual([false, "pi-bg"]);
+    await x.shutdown();
+  });
 });

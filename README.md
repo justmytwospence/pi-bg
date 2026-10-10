@@ -76,6 +76,8 @@ both repos):
 - **One list under the prompt.** pi-subagents' list (Claude Code's subagent panel: `main` and the
   subagents) ends with this pill; ↓ moves through the subagents to the pill, and Enter on it opens
   the dialog. pi-bg draws no pill of its own then.
+- **Other sources' pills.** Without pi-subagents, the pill also counts other sources' work, such as
+  pi-marimo's busy notebooks: `2 shells · 1 notebook` (they draw no pill of their own then).
 - **One list in the view.** `/tasks` lists the subagents too, mixed in with the shells and tagged: Enter opens a run's
   conversation, `x` twice stops it, `x` on an ended one dismisses it.
 - **Waiting on subagents.** Async subagent runs are outside work `bg_wait subagent:<id>` can wait

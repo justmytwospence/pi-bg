@@ -155,9 +155,46 @@ export default function piBg(pi: ExtensionAPI) {
   const others = new Map<string, ActivitySection>();
   /** pi-subagents shows our pill at the end of its list under the prompt (activity.ts). */
   let hosted = false;
+  /** Other sources whose pills ours counts while no one hosts us (pi-marimo's notebooks). */
+  const guests = new Map<string, ActivitySection>();
+  const hostGuest = (s: ActivitySection) => {
+    if (hosted || !attached || !tui() || typeof s.pill !== "function" || typeof s.setHosted !== "function") return;
+    if (guests.get(s.id) === s) return;
+    guests.set(s.id, s);
+    try {
+      s.setHosted(true, "pi-bg");
+    } catch {
+      guests.delete(s.id);
+    }
+  };
+  const releaseGuests = () => {
+    for (const s of guests.values()) {
+      try {
+        s.setHosted?.(false, "pi-bg");
+      } catch {
+        // Its session may be gone.
+      }
+    }
+    guests.clear();
+  };
   const tui = () => ctx?.mode === "tui";
+  /** Our pill and our guests': `2 shells · 1 notebook`. */
+  const combinedPill = (now: number): ActivityPill | undefined => {
+    const pills = [pillOf(now)];
+    for (const s of guests.values()) {
+      try {
+        pills.push(s.pill?.(now));
+      } catch {
+        // Another extension's bug must not break the pill.
+      }
+    }
+    const shown = pills.filter((p): p is ActivityPill => !!p);
+    if (!shown.length) return undefined;
+    const alerts = shown.map((p) => p.alert).filter(Boolean);
+    return { label: shown.map((p) => p.label).join(" · "), ...(alerts.length ? { alert: alerts.join(" · ") } : {}) };
+  };
   const pill = new PillView({
-    pill: (now) => pillOf(now),
+    pill: (now) => combinedPill(now),
     open: () => {
       if (ctx) openDialog(ctx.ui).catch(() => undefined);
     },
@@ -211,6 +248,9 @@ export default function piBg(pi: ExtensionAPI) {
     openDialog: (ui) => openDialog(ui as ExtensionContext["ui"]),
     setHosted: (on) => {
       hosted = on;
+      // Hosted, our pill sits beside the guests' in the host's list: they go back to it.
+      if (on) releaseGuests();
+      else for (const s of others.values()) hostGuest(s);
       bindPill();
       refresh();
     },
@@ -222,10 +262,21 @@ export default function piBg(pi: ExtensionAPI) {
   // Other sources, for the dialog.
   pi.events.on(ACTIVITY_SECTION, (data) => {
     const s = (data as { section?: ActivitySection } | undefined)?.section;
-    if (s && s.id !== section.id && typeof s.entries === "function" && typeof s.open === "function") others.set(s.id, s);
+    if (s && s.id !== section.id && typeof s.entries === "function" && typeof s.open === "function") {
+      others.set(s.id, s);
+      hostGuest(s);
+      pill.update();
+    }
   });
   pi.events.on(ACTIVITY_GONE, (data) => {
-    others.delete((data as { id?: string } | undefined)?.id ?? "");
+    const id = (data as { id?: string } | undefined)?.id ?? "";
+    others.delete(id);
+    guests.delete(id);
+    pill.update();
+  });
+  // A guest's content changed: our pill shows it.
+  pi.events.on(ACTIVITY_CHANGED, (data) => {
+    if (guests.has((data as { id?: string } | undefined)?.id ?? "")) pill.update();
   });
 
   const emit = (channel: string, data: unknown) => {
@@ -476,6 +527,7 @@ export default function piBg(pi: ExtensionAPI) {
     hosted = false;
     bindPill();
     offerSection();
+    for (const g of others.values()) hostGuest(g);
     unsubscribe?.();
     unsubscribe = reg.subscribe(onTask);
     oweFromState();
@@ -513,6 +565,7 @@ export default function piBg(pi: ExtensionAPI) {
     pill.dispose();
     if (attached) emit(ACTIVITY_GONE, { id: section.id });
     hosted = false;
+    releaseGuests();
     for (const w of [...waiters]) w.resolve("aborted");
     for (const id of holds) emit("herdr:background", { active: false, id: `bg:${id}` });
     holds.clear();
