@@ -148,6 +148,7 @@ export default function piBg(pi: ExtensionAPI) {
   const section: ActivitySection = {
     id: "bg",
     title: "shells",
+    noun: "shell",
     // Running first (oldest first), then what ended (newest first).
     entries: (now) =>
       [...reg.running(), ...reg.list().filter((t) => t.status !== "running").sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))].map((t) => ({
@@ -160,6 +161,7 @@ export default function piBg(pi: ExtensionAPI) {
             ? `${waitingIds().has(t.id) ? "waiting · " : ""}${t.kind === "service" ? (t.ready ? "ready · " : t.readyPattern ? "starting · " : "service · ") : ""}${runtime(t, now)}`
             : `${outcome(t)} · ${runtime(t, now)}`,
         startedAt: t.startedAt,
+        ...(t.endedAt ? { endedAt: t.endedAt } : {}),
       })),
     open: (key, ui) => {
       const t = reg.find(key);

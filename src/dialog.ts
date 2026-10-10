@@ -1,8 +1,10 @@
-// The background-tasks dialog (`/tasks`, or Enter on the pill): Claude Code's Background dialog.
-// Every source's entries, grouped: pi-bg's shells and, with pi-subagents installed, its subagent
-// runs. ↑↓ (or j/k) select; Enter opens the entry (a shell's live log, a run's conversation) and
-// comes back here when it closes; `x` stops a running entry (press twice) or dismisses an ended
-// one; `r` reruns a shell; `f` follows a shell's log in a herdr split; Esc, q or ← closes.
+// The background-tasks view (`/tasks`, or Enter on the pill): Claude Code's Background dialog, full
+// screen. One list mixing every source (pi-bg's shells and, with pi-subagents installed, its
+// subagent runs), each row tagged with what it is: running first (oldest first), then what ended
+// (newest first). ↑↓ or j/k select; Enter, → or l opens the entry (a shell's live log, a run's
+// conversation) and comes back here when it closes; `x` stops a running entry (press twice) or
+// dismisses an ended one; `r` reruns a shell; `f` follows a shell's log in a herdr split; Esc, q, ←
+// or h goes back.
 import { type Component, type TUI, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ActivityEntry, ActivitySection } from "./activity.ts";
 import { banner, bottom, row as frameRow, rule as frameRule } from "./frame.ts";
@@ -33,7 +35,7 @@ export interface DialogOptions {
   initialKey?: string;
 }
 
-type Row = { kind: "heading"; text: string } | { kind: "entry"; section: ActivitySection; entry: ActivityEntry } | { kind: "blank" };
+type Row = { kind: "entry"; section: ActivitySection; entry: ActivityEntry };
 
 type TuiLike = Pick<TUI, "requestRender"> & { terminal: { rows: number } };
 
@@ -49,26 +51,25 @@ const guard = (fn: () => void) => {
 const icon = (status: ActivityEntry["status"], theme: Theme) =>
   status === "running" ? theme.fg("accent", "●") : status === "done" ? theme.fg("success", "✓") : status === "stopped" ? theme.fg("muted", "■") : theme.fg("error", "✗");
 
-/** The dialog's rows: each source with entries under a heading, running entries first. */
+/** The dialog's rows: every source's entries in one list, running first (oldest first), then ended (newest first). */
 export function dialogRows(sections: ActivitySection[], now: number): Row[] {
   const rows: Row[] = [];
   for (const section of sections) {
-    let entries: ActivityEntry[];
     try {
-      entries = section.entries(now);
+      for (const entry of section.entries(now)) rows.push({ kind: "entry", section, entry });
     } catch {
       // Another extension's bug must not break the dialog (it renders on a timer).
-      continue;
     }
-    if (!entries.length) continue;
-    const running = entries.filter((e) => e.status === "running").length;
-    if (rows.length) rows.push({ kind: "blank" });
-    const title = section.title.charAt(0).toUpperCase() + section.title.slice(1);
-    rows.push({ kind: "heading", text: `${title}${running ? ` · ${running} running` : ""}` });
-    for (const entry of entries) rows.push({ kind: "entry", section, entry });
   }
-  return rows;
+  const running = rows.filter((r) => r.entry.status === "running").sort((a, b) => a.entry.startedAt - b.entry.startedAt);
+  const ended = rows
+    .filter((r) => r.entry.status !== "running")
+    .sort((a, b) => (b.entry.endedAt ?? b.entry.startedAt) - (a.entry.endedAt ?? a.entry.startedAt));
+  return [...running, ...ended];
 }
+
+/** `shell`, `agent`: what a row is, from its source. */
+const nounOf = (section: ActivitySection) => section.noun ?? section.title.replace(/s$/u, "");
 
 export class TasksDialog implements Component {
   private rows: Row[] = [];
@@ -105,23 +106,23 @@ export class TasksDialog implements Component {
     this.selected = kept >= 0 ? kept : Math.min(this.selected, Math.max(0, entries.length - 1));
   }
 
-  private entryRows(): Extract<Row, { kind: "entry" }>[] {
-    return this.rows.filter((r): r is Extract<Row, { kind: "entry" }> => r.kind === "entry");
+  private entryRows(): Row[] {
+    return this.rows;
   }
 
-  private current(): Extract<Row, { kind: "entry" }> | undefined {
+  private current(): Row | undefined {
     return this.entryRows()[this.selected];
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "q") || matchesKey(data, "left")) return this.close(undefined);
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "q") || matchesKey(data, "left") || matchesKey(data, "h")) return this.close(undefined);
     const cur = this.current();
     const armed = this.stopArmed;
     this.stopArmed = false;
     const count = this.entryRows().length;
     if (matchesKey(data, "up") || matchesKey(data, "k")) this.selected = Math.max(0, this.selected - 1);
     else if (matchesKey(data, "down") || matchesKey(data, "j")) this.selected = Math.min(Math.max(0, count - 1), this.selected + 1);
-    else if ((matchesKey(data, "enter") || matchesKey(data, "right")) && cur) return this.close({ kind: "open", section: cur.section, key: cur.entry.key });
+    else if ((matchesKey(data, "enter") || matchesKey(data, "right") || matchesKey(data, "l")) && cur) return this.close({ kind: "open", section: cur.section, key: cur.entry.key });
     else if (matchesKey(data, "x") && cur) {
       if (cur.entry.status === "running") {
         if (!cur.section.stop) return;
@@ -157,6 +158,9 @@ export class TasksDialog implements Component {
     const out = [banner("Background tasks", width, th)];
     const entries = this.entryRows();
     const running = entries.filter((r) => r.entry.status === "running").length;
+    // Tags only when the list mixes kinds of work.
+    const mixed = new Set(entries.map((r) => r.section.id)).size > 1;
+    const tagWidth = Math.max(0, ...entries.map((r) => nounOf(r.section).length));
     out.push(row(th.fg("dim", entries.length ? `${running} running · ${entries.length - running} ended` : "Nothing running")));
     out.push(rule);
 
@@ -164,14 +168,13 @@ export class TasksDialog implements Component {
     let selectedLine = 0;
     let n = 0;
     for (const r of this.rows) {
-      if (r.kind === "blank") lines.push("");
-      else if (r.kind === "heading") lines.push(th.fg("muted", r.text));
-      else {
+      {
         const on = n === this.selected;
         if (on) selectedLine = lines.length;
         const e = r.entry;
         const name = on ? th.bold(th.fg("text", e.label)) : e.label;
-        const left = `${on ? th.fg("accent", "❯") : " "} ${icon(e.status, th)} ${name}  ${th.fg("dim", e.detail)}`;
+        const tag = mixed ? `${th.fg("muted", nounOf(r.section).padEnd(tagWidth))} ` : "";
+        const left = `${on ? th.fg("accent", "❯") : " "} ${icon(e.status, th)} ${tag}${name}  ${th.fg("dim", e.detail)}`;
         const right = th.fg(on ? "text" : "dim", e.stats);
         const gap = inner - visibleWidth(right) - 1;
         lines.push(visibleWidth(left) < gap ? `${left}${" ".repeat(gap - visibleWidth(left))} ${right}` : `${truncateToWidth(left, Math.max(8, gap - 1), "…")} ${right}`);
@@ -190,7 +193,7 @@ export class TasksDialog implements Component {
     const cur = this.current();
     const hints: string[] = [];
     if (cur) {
-      hints.push("enter view");
+      hints.push("j/k move · l/enter view");
       if (cur.entry.status === "running" && cur.section.stop) hints.push(this.stopArmed ? th.fg("error", `x again to stop ${cur.entry.label}`) : "x stop");
       else if (cur.entry.status !== "running" && cur.section.dismiss) hints.push("x dismiss");
       if (cur.section.id === this.options.ownId) {
@@ -198,7 +201,7 @@ export class TasksDialog implements Component {
         if (this.options.canFollow) hints.push("f follow in a split");
       }
     }
-    hints.push("esc back to your session");
+    hints.push("h/esc back to your session");
     out.push(row(th.fg("dim", hints.join(" · "))));
     out.push(bottom(width, th));
     return out;

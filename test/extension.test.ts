@@ -119,7 +119,7 @@ describe("pi-bg", () => {
     expect(x.widgetLines()).toEqual(["  1 shell "]);
     // ↓ at an empty prompt selects it; Enter opens the dialog.
     expect(x.press("\x1b[B")).toBe(true);
-    expect(x.widgetLines()?.[0]).toBe(" [ 1 shell ]  enter to view · esc to go back");
+    expect(x.widgetLines()?.[0]).toBe(" [ 1 shell ]  l/enter view · h/esc back");
     expect(x.press("\r")).toBe(true);
     expect(x.opened).toHaveLength(1);
     const dialog = x.overlay(0);
@@ -128,7 +128,8 @@ describe("pi-bg", () => {
     expect(lines[1]).toContain("1 running · 0 ended");
     // It covers the screen.
     expect(lines).toHaveLength(40);
-    expect(lines.join("\n")).toMatch(/Shells · 1 running[^\n]*\n[^\n]*❯ ● flaky  sleep 2; echo bad; exit 3 +0:0\d/u);
+    // One source: no tags.
+    expect(lines.join("\n")).toMatch(/❯ ● flaky  sleep 2; echo bad; exit 3 +0:0\d/u);
     dialog.handleInput("\x1b");
     await until(() => x.sent.length > 0, 5_000);
     // Failed: the pill keeps a red count until the user's next message.
@@ -238,7 +239,8 @@ describe("pi-bg", () => {
     x.pi.events.emit(ACTIVITY_SECTION, { section: runs });
     void section.openDialog(x.ctx.ui);
     const text = x.overlay(0).render(100).join("\n");
-    expect(text).toMatch(/Shells · 1 running[\s\S]*Subagents · 1 running[\s\S]*● scout  look around/u);
+    // One list: the oldest running first, each row tagged with what it is.
+    expect(text).toMatch(/● subagent scout  look around[\s\S]*● shell    hosted  echo out; sleep 3/u);
     x.overlay(0).handleInput("\x1b");
     section.stop(entries[0].key);
     await until(() => section.entries(Date.now())[0]?.status === "stopped", 5_000);

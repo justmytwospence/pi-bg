@@ -1,10 +1,11 @@
 // The pill under the prompt, Claude Code's background-tasks indicator: `2 shells`, plus
-// `1 failed` in the error color while a failure is unseen. `↓` at an empty prompt selects it;
-// Enter (or a click) opens the background-tasks dialog; Esc or `↑` goes back to the prompt.
+// `1 failed` in the error color while a failure is unseen. `↓` at the bottom of the prompt (or `j`
+// in pi-vim's normal mode) selects it, even with a draft in the prompt; Enter, `l` or a click opens
+// the background-tasks view; Esc, `↑`, `k` or `h` goes back to the prompt.
 // With pi-subagents installed it draws nothing: pi-subagents' list under the prompt ends with the
 // same pill (activity.ts).
 import { type TUI, type TuiMouseEvent, type TuiMouseEventResult, isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import type { ActivityPill } from "./activity.ts";
+import { type ActivityPill, leavesPromptDown } from "./activity.ts";
 
 const KEY = "pi-bg-pill";
 
@@ -20,7 +21,7 @@ export function renderPill(pill: ActivityPill | undefined, selected: boolean, wi
   const inverse = (s: string) => (theme.inverse ? theme.inverse(s) : `\x1b[7m${s}\x1b[27m`);
   const label = selected ? inverse(` ${pill.label} `) : theme.fg("muted", ` ${pill.label} `);
   const alert = pill.alert ? `${theme.fg("dim", "·")} ${theme.fg("error", pill.alert)}` : "";
-  const hint = selected ? theme.fg("dim", "  enter to view · esc to go back") : "";
+  const hint = selected ? theme.fg("dim", "  l/enter view · h/esc back") : "";
   return [truncateToWidth(` ${label}${alert ? ` ${alert}` : ""}${hint}`, width)];
 }
 
@@ -104,23 +105,26 @@ export class PillView {
       return undefined;
     }
     if (!this.selected) {
-      if (matchesKey(data, "down") && this.ui.getEditorText() === "") {
+      const focused = this.focused();
+      // Without a view of the editor, only an empty prompt is safe to leave.
+      const down = focused ? leavesPromptDown(focused, data, matchesKey(data, "down"), data === "j") : matchesKey(data, "down") && this.ui.getEditorText() === "";
+      if (down) {
         this.selected = true;
         this.tui?.requestRender();
         return { consume: true };
       }
       return undefined;
     }
-    if (matchesKey(data, "enter")) {
+    if (matchesKey(data, "enter") || matchesKey(data, "l") || matchesKey(data, "right")) {
       this.deselect();
       this.source.open();
       return { consume: true };
     }
-    if (matchesKey(data, "escape") || matchesKey(data, "up")) {
+    if (matchesKey(data, "escape") || matchesKey(data, "up") || matchesKey(data, "k") || matchesKey(data, "h") || matchesKey(data, "left")) {
       this.deselect();
       return { consume: true };
     }
-    if (matchesKey(data, "down")) return { consume: true };
+    if (matchesKey(data, "down") || matchesKey(data, "j")) return { consume: true };
     // Anything else goes back to the editor.
     this.deselect();
     return undefined;
@@ -136,10 +140,14 @@ export class PillView {
     this.tui?.requestRender();
   }
 
+  private focused(): unknown {
+    const tui = this.tui as unknown as { getFocusedComponent?: () => unknown; focusedComponent?: unknown } | undefined;
+    return typeof tui?.getFocusedComponent === "function" ? tui.getFocusedComponent() : tui?.focusedComponent;
+  }
+
   /** Pi's editor has `getText` and `setText`; its dialogs and overlays do not. Unknown focus counts as the editor. */
   private editorFocused(): boolean {
-    const tui = this.tui as unknown as { getFocusedComponent?: () => unknown; focusedComponent?: unknown } | undefined;
-    const focused = typeof tui?.getFocusedComponent === "function" ? tui.getFocusedComponent() : tui?.focusedComponent;
+    const focused = this.focused();
     if (focused == null) return true;
     const c = focused as { getText?: unknown; setText?: unknown };
     return typeof c.getText === "function" && typeof c.setText === "function";

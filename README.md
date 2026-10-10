@@ -49,16 +49,18 @@ task's command, never when it has been reused. Logs older than a week are delete
 Laid out the way Claude Code does it (2.1.296), with the same keys:
 
 - **Pill under the prompt**: `1 shell`, `2 shells`, and `· 1 failed` in the error color while a
-  failure you have not seen is there (until your next message, or `x` in the dialog). `↓` at an
-  empty prompt selects it, Enter (or a click, in fullscreen mode) opens the dialog, Esc or `↑` goes
-  back. Nothing above the prompt.
+  failure you have not seen is there (until your next message, or `x` in the dialog). `↓` at the
+  bottom of the prompt selects it, even with a draft in it (the first `↓` moves the cursor to the
+  end of the draft, as in Claude Code), and so does `j` in pi-vim's normal mode; Enter, `l` (or a
+  click, in fullscreen mode) opens the view; Esc, `h`, `k` or `↑` goes back. Nothing above the prompt.
 - **Background-tasks view** (`/tasks`, also `/bashes`, `/ps`, `/bg`): it takes over the whole
   screen, as Claude Code's and Codex's subagent views do, under an accent-colored banner
   (`◀ esc · Background tasks · not your main session`); Esc goes back. Every task, running first,
-  then what ended (newest first), each with its command and state (`waiting` while a `bg_wait` is on
-  it, `ready` for a service). ↑↓ select; Enter opens the task's live log (↑↓ PgUp/PgDn g/G scroll,
+  then what ended (newest first), in one list even with pi-subagents' runs in it (each row then
+  tagged `shell` or `agent`), each with its command and state (`waiting` while a `bg_wait` is on
+  it, `ready` for a service). ↑↓ or j/k select; Enter opens the task's live log (↑↓ PgUp/PgDn g/G scroll,
   `x` twice stops, Esc comes back to the dialog); `x` twice stops a running task, `x` on an ended one
-  dismisses it; `r` reruns; `f` follows the log in a herdr split; Esc closes.
+  dismisses it; `r` reruns; `f` follows the log in a herdr split; Esc or `h` goes back.
 - **Commands**: `/tasks run <command>` starts a job yourself (it notifies you when it ends and does
   not wake the agent), `/tasks kill <id>`, `/tasks clear` hides ended tasks, and `/stop` (Codex's)
   stops every task this pi started.
@@ -74,7 +76,7 @@ both repos):
 - **One list under the prompt.** pi-subagents' list (Claude Code's subagent panel: `main` and the
   subagents) ends with this pill; ↓ moves through the subagents to the pill, and Enter on it opens
   the dialog. pi-bg draws no pill of its own then.
-- **One dialog.** `/tasks` lists the subagents too, under their own heading: Enter opens a run's
+- **One list in the view.** `/tasks` lists the subagents too, mixed in with the shells and tagged: Enter opens a run's
   conversation, `x` twice stops it, `x` on an ended one dismisses it.
 - **Waiting on subagents.** Async subagent runs are outside work `bg_wait subagent:<id>` can wait
   on inside the turn; the `subagent` tool's result names the ids. The run's result still arrives as

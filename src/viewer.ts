@@ -54,7 +54,7 @@ export class LogViewer implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "q")) {
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "q") || matchesKey(data, "h") || matchesKey(data, "left")) {
       this.close();
       return;
     }
@@ -111,7 +111,7 @@ export class LogViewer implements Component {
     const position = this.lines.length <= page ? "all" : `${Math.round(((start + page) / this.lines.length) * 100)}%`;
     actions.push(th.fg("dim", `${this.lines.length} lines · ${position}${this.follow && t.status === "running" ? " · following" : ""}`));
     const left = actions.join(th.fg("dim", " · "));
-    const nav = th.fg("dim", "↑↓ PgUp/PgDn g/G · esc back");
+    const nav = th.fg("dim", "j/k PgUp/PgDn g/G · h/esc back");
     const gap = inner - visibleWidth(left) - visibleWidth(nav);
     out.push(row(gap >= 1 ? `${left}${" ".repeat(gap)}${nav}` : left));
     out.push(bottom(width, th));
