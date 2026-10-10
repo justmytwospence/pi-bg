@@ -22,7 +22,7 @@ export function renderPill(pill: ActivityPill | undefined, selected: boolean, wi
   const label = selected ? inverse(` ${pill.label} `) : theme.fg("muted", ` ${pill.label} `);
   const alert = pill.alert ? `${theme.fg("dim", "·")} ${theme.fg("error", pill.alert)}` : "";
   const hint = selected ? theme.fg("dim", "  l/enter view · h/esc back") : "";
-  return [truncateToWidth(` ${label}${alert ? ` ${alert}` : ""}${hint}`, width)];
+  return [truncateToWidth(`${label}${alert ? ` ${alert}` : ""}${hint}`, width)];
 }
 
 export interface PillUI {

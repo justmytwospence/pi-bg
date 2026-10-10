@@ -46,7 +46,7 @@ describe("pi-bg", () => {
     expect(hold?.data.label).toBe("build");
     // The pill under the prompt, not a footer status, shows it in the TUI.
     expect(x.status.get("bg")).toBeUndefined();
-    expect(x.widgetLines()).toEqual(["  1 shell "]);
+    expect(x.widgetLines()).toEqual([" 1 shell "]);
     await until(() => x.sent.length > 0, 5_000);
     const wake = x.sent[0];
     expect(wake?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
@@ -116,10 +116,10 @@ describe("pi-bg", () => {
   it("the pill: 1 shell, then the failure in the error color until the next message; ↓ Enter opens the dialog", async () => {
     const x = await load();
     await x.call("bg_run", { command: "sleep 2; echo bad; exit 3", kind: "job", name: "flaky" });
-    expect(x.widgetLines()).toEqual(["  1 shell "]);
+    expect(x.widgetLines()).toEqual([" 1 shell "]);
     // ↓ at an empty prompt selects it; Enter opens the dialog.
     expect(x.press("\x1b[B")).toBe(true);
-    expect(x.widgetLines()?.[0]).toBe(" [ 1 shell ]  l/enter view · h/esc back");
+    expect(x.widgetLines()?.[0]).toBe("[ 1 shell ]  l/enter view · h/esc back");
     expect(x.press("\r")).toBe(true);
     expect(x.opened).toHaveLength(1);
     const dialog = x.overlay(0);
@@ -133,7 +133,7 @@ describe("pi-bg", () => {
     dialog.handleInput("\x1b");
     await until(() => x.sent.length > 0, 5_000);
     // Failed: the pill keeps a red count until the user's next message.
-    expect(x.widgetLines()).toEqual(["  shells  · 1 failed"]);
+    expect(x.widgetLines()).toEqual([" shells  · 1 failed"]);
     for (const h of x.handlers.get("input") ?? []) await h({ source: "interactive", text: "ok" }, x.ctx);
     expect(x.widgets.has("pi-bg-pill")).toBe(false);
     await x.shutdown();
