@@ -6,9 +6,11 @@
 // - bg_wait keeps the turn going until a job ends, so the agent is visibly working (in pi, herdr,
 //   tmux) while it waits. It returns early when the user types, on Esc, or after its timeout.
 // - bg_logs reads a log (or lists the tasks); bg_kill stops one.
-// - A live widget above the editor (like pi-subagents'): each running task with its latest log
-//   line, then what ended. With the widget off (`/bg widget off`) or outside the TUI, a footer status
-//   `bg` instead (pi-status-footer gives it a row). `/bg` to list, view, stop and rerun.
+// - Claude Code's layout: a pill under the prompt (`2 shells`, `1 failed` while a failure is
+//   unseen); ↓ then Enter, or a click, opens the background-tasks dialog, as does `/tasks` (aliases
+//   `/bashes`, `/ps`, `/bg`). `/stop` stops every task. Outside the TUI, a footer status `bg`.
+// - With pi-subagents installed (activity.ts), its list under the prompt ends with this pill, and
+//   the dialog lists its runs too.
 //
 // Other extensions, through pi.events (all optional; without listeners nothing happens):
 //   emits  herdr:background {active,label,id}  while an agent job runs that will wake the agent
@@ -26,35 +28,11 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { elapsed, footerStatus, header, marimoNote, nameFromCommand, outcome, report, runtime, taskLine } from "./format.ts";
 import { bounded, grep, head, tail } from "./log.ts";
-import { type Kind, type Task, type TaskEvent, bgDir, parsePattern, registry } from "./registry.ts";
-import { ACTIVITY_CHANGED, ACTIVITY_GONE, ACTIVITY_HOST, ACTIVITY_SECTION, type ActivityEntry, type ActivitySection } from "./activity.ts";
+import { type Kind, type Task, type TaskEvent, parsePattern, registry } from "./registry.ts";
+import { ACTIVITY_CHANGED, ACTIVITY_GONE, ACTIVITY_HOST, ACTIVITY_SECTION, type ActivityEntry, type ActivityPill, type ActivitySection } from "./activity.ts";
+import { type DialogResult, TasksDialog } from "./dialog.ts";
+import { PillView } from "./pill.ts";
 import { LogViewer } from "./viewer.ts";
-import { TasksWidget, widgetTasks } from "./widget.ts";
-
-/** `~/.pi/agent/bg/settings.json`: `{ "widget": false }` turns the widget off (the footer status shows instead). */
-function loadWidgetSetting(): boolean {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(bgDir(), "settings.json"), "utf8"))?.widget !== false;
-  } catch {
-    return true;
-  }
-}
-
-function saveWidgetSetting(on: boolean): void {
-  try {
-    fs.mkdirSync(bgDir(), { recursive: true });
-    const file = path.join(bgDir(), "settings.json");
-    let data: Record<string, unknown> = {};
-    try {
-      data = JSON.parse(fs.readFileSync(file, "utf8")) ?? {};
-    } catch {
-      // A new file.
-    }
-    fs.writeFileSync(file, `${JSON.stringify({ ...data, widget: on }, null, 2)}\n`);
-  } catch {
-    // The setting still applies to this session.
-  }
-}
 
 const STARTUP_WAIT_MS = 1_500;
 const WAIT_DEFAULT_S = 1_800;
@@ -62,6 +40,7 @@ const WAIT_MAX_S = 3_600;
 const LOGS_DEFAULT = 60;
 const LOGS_MAX = 400;
 const LOGS_BYTES = 12_000;
+const EXTERNAL_KEEP_MS = 10 * 60_000;
 
 export interface External {
   id: string;
@@ -127,50 +106,60 @@ export default function piBg(pi: ExtensionAPI) {
   let statusTimer: ReturnType<typeof setInterval> | undefined;
   let lastStatus: string | undefined;
   let herdrActive = false;
-  let widgetOn = loadWidgetSetting();
+  /** The running jobs the agent started: what bg_wait without an id waits for. */
+  const agentJobs = () => reg.running().filter((t) => t.kind === "job" && t.origin === "agent");
   /** The tasks a bg_wait is waiting on. */
   const waitingIds = (): Set<string> => {
     const ids = new Set<string>();
     for (const w of waiters) {
       if (w.silent) continue;
       for (const id of w.targets) ids.add(id);
-      if (w.any) for (const t of reg.running()) if (t.kind === "job") ids.add(t.id);
+      if (w.any) for (const t of agentJobs()) ids.add(t.id);
     }
     return ids;
   };
-  /** When the user last sent a message: ended failures and stops leave the panel then. */
+  /** When the user last sent a message: failures before it no longer alert in the pill. */
   let dismissedAt = 0;
-  const widget = new TasksWidget({
-    tasks: () => reg.list(),
-    waiting: waitingIds,
-    dismissedAt: () => dismissedAt,
-    open: (id) => {
-      const t = reg.tasks.get(id);
-      if (t && ctx) void openLog(ctx.ui, t);
-    },
-  });
-  /** pi-subagents shows our rows as a section of its panel (activity.ts). */
+  /** Other extensions' sources (pi-subagents' runs), listed in the dialog. */
+  const others = new Map<string, ActivitySection>();
+  /** pi-subagents shows our pill at the end of its list under the prompt (activity.ts). */
   let hosted = false;
   const tui = () => ctx?.mode === "tui";
-  const widgetShown = () => widgetOn && tui() && !hosted;
+  const pill = new PillView({
+    pill: (now) => pillOf(now),
+    open: () => {
+      if (ctx) void openDialog(ctx.ui);
+    },
+  });
+  const bindPill = () => pill.setUI(attached && tui() && !hosted ? (ctx?.ui as any) : undefined);
+
   const entryStatus = (t: Task): ActivityEntry["status"] =>
     t.status === "running" ? "running" : t.status === "done" ? "done" : t.status === "killed" ? "stopped" : "failed";
+  /** A failure the user has not seen: it ended after their last message and is not dismissed. */
+  const alerting = (t: Task) => (t.status === "failed" || t.status === "timeout") && (t.endedAt ?? 0) > dismissedAt && !reg.cleared.has(t.id);
+  const pillOf = (now: number): ActivityPill | undefined => {
+    void now;
+    const running = reg.running().length;
+    const failed = reg.list().filter(alerting).length;
+    if (!running && !failed) return undefined;
+    return { label: running ? `${running} shell${running === 1 ? "" : "s"}` : "shells", ...(failed ? { alert: `${failed} failed` } : {}) };
+  };
   const section: ActivitySection = {
     id: "bg",
-    title: "background tasks",
-    hasContent: (now) => widgetOn && widget.hasContent(now),
-    render: (f) => (widgetOn ? widget.section(f) : { lines: [], targets: [] }),
+    title: "shells",
+    // Running first (oldest first), then what ended (newest first).
     entries: (now) =>
-      widgetOn
-        ? widgetTasks(reg.list(), now, dismissedAt).map((t) => ({
-            key: t.id,
-            label: t.name,
-            detail: t.command.replace(/\s+/gu, " ").trim(),
-            status: entryStatus(t),
-            stats: t.status === "running" ? `${t.kind === "service" ? (t.ready ? "ready " : "service ") : ""}${runtime(t, now)}` : `${outcome(t)} · ${runtime(t, now)}`,
-            startedAt: t.startedAt,
-          }))
-        : [],
+      [...reg.running(), ...reg.list().filter((t) => t.status !== "running").sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))].map((t) => ({
+        key: t.id,
+        label: t.name,
+        detail: t.command.replace(/\s+/gu, " ").trim(),
+        status: entryStatus(t),
+        stats:
+          t.status === "running"
+            ? `${waitingIds().has(t.id) ? "waiting · " : ""}${t.kind === "service" ? (t.ready ? "ready · " : t.readyPattern ? "starting · " : "service · ") : ""}${runtime(t, now)}`
+            : `${outcome(t)} · ${runtime(t, now)}`,
+        startedAt: t.startedAt,
+      })),
     open: (key, ui) => {
       const t = reg.find(key);
       return t ? openLog(ui as ExtensionContext["ui"], t) : Promise.resolve();
@@ -179,10 +168,17 @@ export default function piBg(pi: ExtensionAPI) {
       const t = reg.find(key);
       if (t?.status === "running") void stopTask(t, "user");
     },
+    dismiss: (key) => {
+      const t = reg.find(key);
+      if (!t || t.status === "running") return;
+      reg.cleared.add(t.id);
+      refresh();
+    },
+    pill: (now) => pillOf(now),
+    openDialog: (ui) => openDialog(ui as ExtensionContext["ui"]),
     setHosted: (on) => {
       hosted = on;
-      widget.setUI(widgetShown() ? (ctx?.ui as any) : undefined);
-      lastStatus = "\u0000";
+      bindPill();
       refresh();
     },
   };
@@ -190,6 +186,14 @@ export default function piBg(pi: ExtensionAPI) {
     if (attached && tui()) emit(ACTIVITY_SECTION, { section });
   };
   pi.events.on(ACTIVITY_HOST, () => offerSection());
+  // Other sources, for the dialog.
+  pi.events.on(ACTIVITY_SECTION, (data) => {
+    const s = (data as { section?: ActivitySection } | undefined)?.section;
+    if (s && s.id !== section.id && typeof s.entries === "function" && typeof s.open === "function") others.set(s.id, s);
+  });
+  pi.events.on(ACTIVITY_GONE, (data) => {
+    others.delete((data as { id?: string } | undefined)?.id ?? "");
+  });
 
   const emit = (channel: string, data: unknown) => {
     try {
@@ -216,7 +220,7 @@ export default function piBg(pi: ExtensionAPI) {
 
   const updateStatus = () => {
     if (!attached || !ctx?.hasUI) return;
-    const s = widgetOn && tui() ? undefined : footerStatus(reg.list());
+    const s = tui() ? undefined : footerStatus(reg.list());
     if (s === lastStatus) return;
     lastStatus = s;
     ctx.ui.setStatus("bg", s);
@@ -225,7 +229,10 @@ export default function piBg(pi: ExtensionAPI) {
   /** Hold herdr:background for every agent job that will wake the agent. */
   const syncHolds = () => {
     if (!attached) return;
-    const want = new Set(reg.running().filter((t) => t.origin === "agent" && t.kind === "job" && !t.delivered).map((t) => t.id));
+    const want = new Set([
+      ...reg.running().filter((t) => t.origin === "agent" && t.kind === "job" && !t.delivered).map((t) => t.id),
+      ...[...owed.keys()].filter((id) => reg.tasks.has(id)),
+    ]);
     for (const id of want) {
       if (holds.has(id)) continue;
       holds.add(id);
@@ -240,8 +247,8 @@ export default function piBg(pi: ExtensionAPI) {
 
   const refresh = () => {
     updateStatus();
-    widget.update();
-    if (hosted) emit(ACTIVITY_CHANGED, { id: section.id });
+    pill.update();
+    emit(ACTIVITY_CHANGED, { id: section.id });
     syncHolds();
     emit("bg:tasks", { tasks: snapshot() });
   };
@@ -256,24 +263,53 @@ export default function piBg(pi: ExtensionAPI) {
     return `${what} ${t.name} (${t.id}) ended: ${outcome(t)} after ${runtime(t)}.\n\n${report(t)}`;
   };
 
+  /**
+   * Wake-ups owed to the agent. They are sent only while pi is idle: a follow-up queued during a turn
+   * is dropped when the user presses Esc, and pi would start a turn in the middle of a compaction.
+   * Whatever bg_wait, bg_logs or bg_kill delivers meanwhile is no longer owed.
+   */
+  const owed = new Map<string, "end" | "ready">();
   const wake = (t: Task, kind: "end" | "ready") => {
-    if (kind === "end") t.delivered = true;
-    else t.readyDelivered = true;
-    if (!attached) {
-      t.pendingWake = kind;
-      return;
+    owed.set(t.id, kind);
+    flushOwed();
+  };
+  const flushOwed = (c: Pick<ExtensionContext, "isIdle"> | undefined = ctx) => {
+    if (!attached || !owed.size || !c?.isIdle()) return;
+    const parts: string[] = [];
+    const sent: { id: string; kind: "end" | "ready"; status: string }[] = [];
+    for (const [id, kind] of owed) {
+      const t = reg.tasks.get(id);
+      if (!t || (kind === "end" ? t.delivered : t.readyDelivered)) continue;
+      if (kind === "end") t.delivered = true;
+      else t.readyDelivered = true;
+      parts.push(wakeText(t, kind));
+      sent.push({ id, kind, status: t.status });
     }
-    t.pendingWake = undefined;
-    pi.sendMessage(
-      { customType: "pi-bg", content: wakeText(t, kind), display: true, details: { id: t.id, name: t.name, kind, status: t.status } },
-      { triggerTurn: true, deliverAs: "followUp" },
-    );
+    owed.clear();
+    if (!parts.length) return;
+    try {
+      pi.sendMessage(
+        { customType: "pi-bg", content: parts.join("\n\n---\n\n"), display: true, details: { tasks: sent } },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    } catch {
+      // The session went away under us.
+    }
+    refresh();
+  };
+  /** After a reload: outcomes that arrived while no session was attached are owed now. */
+  const oweFromState = () => {
+    for (const t of reg.tasks.values()) {
+      if (t.origin !== "agent") continue;
+      if (t.status !== "running" && !t.delivered) owed.set(t.id, "end");
+      else if (t.status === "running" && t.ready && t.readyPattern && !t.readyDelivered) owed.set(t.id, "ready");
+    }
   };
 
   /** Hands an ended or ready task to a waiter; true when one took it. */
   const toWaiter = (t: Task, kind: "end" | "ready"): boolean => {
     for (const w of waiters) {
-      const targeted = w.targets.has(t.id) || (w.any && kind === "end" && t.kind === "job");
+      const targeted = w.targets.has(t.id) || (w.any && kind === "end" && t.kind === "job" && t.origin === "agent");
       if (!targeted) continue;
       if (kind === "end") {
         t.delivered = true;
@@ -305,7 +341,7 @@ export default function piBg(pi: ExtensionAPI) {
       if (!toWaiter(t, "ready")) wake(t, "ready");
     }
     if (e.type === "end") {
-      const awaited = [...waiters].some((w) => w.targets.has(t.id));
+      const awaited = [...waiters].some((w) => w.targets.has(t.id) || (w.any && t.kind === "job" && t.origin === "agent"));
       if (t.killedBy === "session") t.delivered = true;
       else if (awaited) toWaiter(t, "end");
       else if (t.origin === "user" || t.adopted) notifyUser(t);
@@ -365,6 +401,8 @@ export default function piBg(pi: ExtensionAPI) {
     if (!d?.id || typeof d.id !== "string") return;
     const state = d.state === "done" || d.state === "failed" ? d.state : "running";
     const x: External = { id: d.id, label: d.label || d.id, state, summary: d.summary, updatedAt: Date.now() };
+    // Ended outside work is kept a while for a late bg_wait, then forgotten.
+    for (const [id, old] of externals) if (old.state !== "running" && x.updatedAt - old.updatedAt > EXTERNAL_KEEP_MS) externals.delete(id);
     externals.set(x.id, x);
     if (state !== "running") {
       for (const w of waiters) {
@@ -391,11 +429,13 @@ export default function piBg(pi: ExtensionAPI) {
       if (adopted.length && c.hasUI) c.ui.notify(`bg: adopted kept service${adopted.length > 1 ? "s" : ""} ${adopted.map((t) => t.name).join(", ")}`, "info");
     }
     hosted = false;
-    widget.setUI(widgetShown() ? (c.ui as any) : undefined);
+    bindPill();
     offerSection();
     unsubscribe?.();
     unsubscribe = reg.subscribe(onTask);
-    for (const t of reg.list()) if (t.pendingWake) wake(t, t.pendingWake);
+    oweFromState();
+    // Once the session is set up.
+    setImmediate(() => flushOwed());
     herdrActive = false;
     emit("herdr:probe", {
       reply: () => {
@@ -407,6 +447,9 @@ export default function piBg(pi: ExtensionAPI) {
     refresh();
   });
 
+  pi.on("agent_settled", (_event, c) => flushOwed(c));
+  pi.on("session_compact", (_event, c) => flushOwed(c));
+
   // The user's next message dismisses failures and stops they have had a chance to see.
   pi.on("input", (event) => {
     if ((event as { source?: string }).source !== "interactive") return;
@@ -414,23 +457,23 @@ export default function piBg(pi: ExtensionAPI) {
     refresh();
   });
 
+  // pi-herdr listens for holds from the moment it loads, so they are never sent twice.
   pi.events.on("herdr:ready", () => {
     herdrActive = true;
-    // pi-herdr loaded after us: send the holds again.
-    holds.clear();
-    syncHolds();
   });
 
   pi.on("session_shutdown", async (event) => {
     if (statusTimer) clearInterval(statusTimer);
     statusTimer = undefined;
-    widget.dispose();
+    pill.dispose();
     if (attached) emit(ACTIVITY_GONE, { id: section.id });
     hosted = false;
     for (const w of [...waiters]) w.resolve("aborted");
     for (const id of holds) emit("herdr:background", { active: false, id: `bg:${id}` });
     holds.clear();
     if (event.reason !== "reload") await reg.killAll("session");
+    // Quitting: kept services stay listed for a later pi to adopt.
+    if (event.reason === "quit") reg.release();
     unsubscribe?.();
     unsubscribe = undefined;
     attached = false;
@@ -462,7 +505,9 @@ export default function piBg(pi: ExtensionAPI) {
       if (params.ready && kind !== "service") throw new Error("`ready` is for services; a job wakes you when it exits.");
       if (params.ready) parsePattern(params.ready);
       if (params.keep && kind !== "service") throw new Error("`keep` is for services.");
+      if (params.timeout && kind !== "job") throw new Error("`timeout` is for jobs; a service runs until it is stopped.");
       const cwd = params.cwd ? path.resolve(c.cwd, params.cwd.replace(/^~(?=\/|$)/u, process.env.HOME ?? "~")) : c.cwd;
+      if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`No such directory: ${cwd}`);
       const task = reg.start({
         command: params.command,
         name: params.name?.trim() || nameFromCommand(params.command),
@@ -529,7 +574,7 @@ export default function piBg(pi: ExtensionAPI) {
           targets.add(t.id);
         }
       } else {
-        const jobs = reg.running().filter((t) => t.kind === "job");
+        const jobs = agentJobs();
         if (!jobs.length) {
           const services = reg.running().filter((t) => t.kind === "service");
           return text(`Nothing to wait for: no job is running.${services.length ? ` Services: ${services.map((t) => `${t.name} (${outcome(t)})`).join(", ")}.` : ""}`);
@@ -539,7 +584,7 @@ export default function piBg(pi: ExtensionAPI) {
       if (c.hasPendingMessages()) {
         return text("Not waiting: messages are queued for you and arrive when your turn ends. End your turn to read them; running jobs keep going and wake you when they end.");
       }
-      const names = () => (any ? reg.running().filter((t) => t.kind === "job") : [...targets].map((id) => reg.tasks.get(id)).filter((t): t is Task => !!t));
+      const names = () => (any ? agentJobs() : [...targets].map((id) => reg.tasks.get(id)).filter((t): t is Task => !!t));
       const label = () => {
         const ts = names();
         if (!ts.length) return externals.get([...targets][0] ?? "")?.label ?? "outside work";
@@ -570,7 +615,7 @@ export default function piBg(pi: ExtensionAPI) {
         const what = still.length ? still.map((t) => `${t.name} (${t.id}, ${runtime(t)})`).join(", ") : label();
         const why =
           reason === "message"
-            ? "Stopped waiting: a message arrived for you (from the user, or another extension's result)."
+            ? "Stopped waiting: the user sent a message."
             : reason === "aborted"
               ? "Stopped waiting: interrupted."
               : `Stopped waiting after ${elapsed(Date.now() - started)} (the timeout).`;
@@ -632,7 +677,7 @@ export default function piBg(pi: ExtensionAPI) {
     },
   });
 
-  // ---- /bg ----
+  // ---- the dialog and its commands ----
 
   const openLog = async (ui: ExtensionContext["ui"], t: Task) => {
     await ui.custom<void>(
@@ -649,17 +694,49 @@ export default function piBg(pi: ExtensionAPI) {
     return t;
   };
 
-  pi.registerCommand("bg", {
-    description: "Background tasks: list, view logs, stop, rerun (`/bg run <command>`, `/bg kill <id>`, `/bg clear`, `/bg widget on|off`)",
-    getArgumentCompletions: (prefix) => {
-      const subs = ["run ", "kill ", "clear", "widget on", "widget off"].filter((s) => s.startsWith(prefix));
-      return subs.length ? subs.map((s) => ({ value: s, label: s.trim() })) : null;
+  const follow = (c: Pick<ExtensionContext, "ui">, t: Task) =>
+    emit("herdr:split", {
+      command: `tail -n 200 -F ${JSON.stringify(t.logPath)}`,
+      cwd: t.cwd,
+      done: (ok: boolean, message: string) => {
+        if (!ok) c.ui.notify(`bg: ${message}`, "warning");
+      },
+    });
+
+  /** The background-tasks dialog; after an entry's view closes, back to the list on that entry. */
+  const openDialog = async (ui: ExtensionContext["ui"]) => {
+    let initialKey: string | undefined;
+    for (;;) {
+      const sections = () => [section, ...others.values()];
+      const picked: DialogResult = await ui.custom<DialogResult>(
+        (tui, theme, _kb, done) => new TasksDialog(tui as any, theme as any, { sections, ownId: section.id, canFollow: herdrActive, initialKey }, done),
+        { overlay: true, overlayOptions: { anchor: "center", width: "90%", maxHeight: "80%" } },
+      );
+      if (!picked) return;
+      initialKey = picked.key;
+      if (picked.kind === "open") await picked.section.open(picked.key, ui);
+      else if (picked.kind === "rerun") {
+        const t = reg.find(picked.key);
+        if (t && ctx) initialKey = startUserTask(ctx, t.command).id;
+      } else if (picked.kind === "follow") {
+        const t = reg.find(picked.key);
+        if (t) follow({ ui }, t);
+        return;
+      }
+    }
+  };
+
+  const tasksCommand = {
+    description: "Background tasks (also /bashes, /ps, /bg): the dialog; `run <command>` starts one, `kill <id>` stops one, `clear` hides ended ones",
+    getArgumentCompletions: (prefix: string) => {
+      const subs = ["run ", "kill ", "clear"].filter((x) => x.startsWith(prefix));
+      return subs.length ? subs.map((x) => ({ value: x, label: x.trim() })) : null;
     },
-    handler: async (args, c) => {
+    handler: async (args: string, c: ExtensionContext) => {
       const [sub, ...rest] = args.trim().split(/\s+/u);
       const arg = args.trim().slice((sub ?? "").length).trim();
       if (sub === "run") {
-        if (!arg) return c.ui.notify("Usage: /bg run <command>", "warning");
+        if (!arg) return c.ui.notify("Usage: /tasks run <command>", "warning");
         startUserTask(c, arg);
         return;
       }
@@ -669,16 +746,6 @@ export default function piBg(pi: ExtensionAPI) {
         await stopTask(t, "user");
         return c.ui.notify(`bg: stopped ${t.name}`, "info");
       }
-      if (sub === "widget") {
-        const want = rest[0] === "on" ? true : rest[0] === "off" ? false : !widgetOn;
-        widgetOn = want;
-        saveWidgetSetting(want);
-        widget.setUI(widgetShown() ? (c.ui as any) : undefined);
-        // Force the next status write (to set it, or to clear it).
-        lastStatus = "\u0000";
-        refresh();
-        return c.ui.notify(`bg: widget ${want ? "on" : "off (footer status instead)"}`, "info");
-      }
       if (sub === "clear") {
         let n = 0;
         for (const t of reg.list()) {
@@ -687,37 +754,25 @@ export default function piBg(pi: ExtensionAPI) {
           n++;
         }
         refresh();
-        return c.ui.notify(n ? `Cleared ${n} finished task${n === 1 ? "" : "s"}.` : "Nothing to clear.", "info");
+        return c.ui.notify(n ? `Cleared ${n} ended task${n === 1 ? "" : "s"}.` : "Nothing to clear.", "info");
       }
-      const tasks = reg.list().reverse();
-      if (!tasks.length) return c.ui.notify("No background tasks. `/bg run <command>` starts one.", "info");
-      const labels = tasks.map((t) => taskLine(t));
-      const picked = await c.ui.select("Background tasks", labels);
-      const t = tasks[labels.indexOf(picked ?? "")];
-      if (!t) return;
-      const actions = ["View log"];
-      if (t.status === "running") actions.push("Stop");
-      actions.push("Rerun");
-      if (herdrActive) actions.push("Follow in a herdr split");
-      actions.push("Copy log path to the editor");
-      const action = await c.ui.select(`${t.name}: ${outcome(t)} after ${runtime(t)}`, actions);
-      if (action === "View log") {
-        if (c.mode === "tui") await openLog(c.ui, t);
-        else c.ui.notify(tail(t.logPath, 20).join("\n") || "(no output)", "info");
-      }
-      else if (action === "Stop") {
-        await stopTask(t, "user");
-        c.ui.notify(`bg: stopped ${t.name}`, "info");
-      } else if (action === "Rerun") startUserTask(c, t.command);
-      else if (action === "Follow in a herdr split") {
-        emit("herdr:split", {
-          command: `tail -n 200 -F ${JSON.stringify(t.logPath)}`,
-          cwd: t.cwd,
-          done: (ok: boolean, message: string) => {
-            if (!ok) c.ui.notify(`bg: ${message}`, "warning");
-          },
-        });
-      } else if (action === "Copy log path to the editor") c.ui.pasteToEditor(t.logPath);
+      if (c.mode === "tui") return openDialog(c.ui);
+      // Without the TUI: a plain list.
+      const lines = reg.list().map((t) => taskLine(t));
+      c.ui.notify(lines.length ? lines.join("\n") : "No background tasks.", "info");
+    },
+  };
+  // Claude Code's /tasks and /bashes, Codex's /ps, and our own /bg.
+  for (const name of ["tasks", "bashes", "ps", "bg"]) pi.registerCommand(name, tasksCommand);
+
+  // Codex's /stop: stop every background task this pi started (kept services from earlier sessions stay).
+  pi.registerCommand("stop", {
+    description: "Stop every background task (not kept services from earlier sessions)",
+    handler: async (_args, c) => {
+      const running = reg.running().filter((t) => !t.adopted);
+      if (!running.length) return c.ui.notify("No background tasks running.", "info");
+      await Promise.all(running.map((t) => stopTask(t, "user")));
+      c.ui.notify(`bg: stopped ${running.length} task${running.length === 1 ? "" : "s"}`, "info");
     },
   });
 }

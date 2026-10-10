@@ -65,21 +65,80 @@ describe("registry", () => {
     await until(() => t.status !== "running");
   });
 
-  it("a later pi adopts kept services under its cwd and kills a crashed pi's orphans", async () => {
+  it("a later pi adopts kept services under its cwd and kills a crashed pi's orphans, checking each pid still runs our command", async () => {
     const a = new Registry();
-    const kept = a.start({ ...base, command: "sleep 30", name: "kept", kind: "service", cwd: dir, keep: true });
-    const orphan = a.start({ ...base, command: "sleep 30", name: "orphan", kind: "job", cwd: dir });
-    // Pretend the owner crashed: rewrite state.json with a dead owner pid.
-    const state = path.join(dir, "state.json");
-    const entries = JSON.parse(fs.readFileSync(state, "utf8")).map((e: any) => ({ ...e, owner: 999_999 }));
-    fs.writeFileSync(state, JSON.stringify(entries));
+    const kept = a.start({ ...base, command: "sleep 31", name: "kept", kind: "service", cwd: dir, keep: true });
+    const orphan = a.start({ ...base, command: "sleep 32", name: "orphan", kind: "job", cwd: dir });
+    const other = a.start({ ...base, command: "sleep 33", name: "other", kind: "job", cwd: dir });
+    // Pretend the owner crashed: move its state file to a dead pid's name, and make one entry's
+    // command not match what its pid runs (as if the pid had been reused).
+    const own = path.join(dir, "state", `${process.pid}.json`);
+    const entries = JSON.parse(fs.readFileSync(own, "utf8")).map((e: any) => (e.name === "other" ? { ...e, command: "something else entirely" } : e));
+    fs.rmSync(own);
+    fs.writeFileSync(path.join(dir, "state", "999999.json"), JSON.stringify(entries));
     const b = new Registry();
     const adopted = b.sweep(dir);
     expect(adopted.map((t) => t.name)).toEqual(["kept"]);
     await until(() => !groupAlive(orphan.pid as number), 3_000);
     expect(groupAlive(kept.pid as number)).toBe(true);
+    // Not ours any more: left alone.
+    expect(groupAlive(other.pid as number)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "state", "999999.json"))).toBe(false);
     await b.kill(kept.id, "user");
     expect(b.tasks.get(kept.id)?.status).toBe("killed");
+    await a.kill(other.id, "user");
     await until(() => a.tasks.get(kept.id)?.status !== "running" && a.tasks.get(orphan.id)?.status !== "running");
+  });
+
+  it("a pi that quits leaves its kept services released, for any later pi under that cwd", async () => {
+    const a = new Registry();
+    const kept = a.start({ ...base, command: "sleep 34", name: "kept2", kind: "service", cwd: dir, keep: true });
+    a.release();
+    const own = path.join(dir, "state", `${process.pid}.json`);
+    expect(JSON.parse(fs.readFileSync(own, "utf8"))).toMatchObject([{ name: "kept2", released: true }]);
+    // The same pid looks alive, but released entries are adoptable anyway.
+    fs.renameSync(own, path.join(dir, "state", `${process.ppid}.json`));
+    const b = new Registry();
+    expect(b.sweep(dir).map((t) => t.name)).toEqual(["kept2"]);
+    await b.kill(kept.id, "user");
+    await until(() => a.tasks.get(kept.id)?.status !== "running");
+  });
+
+  it("an exit 0 that races a stop still reads as done; processes the shell left behind die at session end", async () => {
+    const reg = new Registry();
+    const t = reg.start({ ...base, command: "sleep 30 & exit 0", name: "leaves", kind: "job", cwd: dir });
+    await until(() => t.status !== "running");
+    expect(t.status).toBe("done");
+    expect(t.strays).toBe(true);
+    expect(groupAlive(t.pid as number)).toBe(true);
+    await reg.killAll("session");
+    await until(() => !groupAlive(t.pid as number), 3_000);
+  });
+});
+
+describe("registry across a reload and over time", () => {
+  it("a registry from an earlier load shares its state: old exit handlers reach new listeners", async () => {
+    const old = new Registry();
+    const t = old.start({ ...base, command: "sleep 0.5", name: "spans", kind: "job", cwd: dir });
+    const next = new Registry();
+    next.adopt(old);
+    const seen: string[] = [];
+    next.subscribe((e) => seen.push(`${e.type}:${e.task.name}`));
+    expect(next.find("spans")).toBe(t);
+    await until(() => t.status !== "running", 3_000);
+    expect(seen).toEqual(["end:spans"]);
+  });
+
+  it("a running log past the cap is cut back to its tail", async () => {
+    const reg = new Registry();
+    const t = reg.start({ ...base, command: "for i in $(seq 1 400); do echo line-$i; done; sleep 3", name: "chatty", kind: "job", cwd: dir });
+    await until(() => (tail(t.logPath, 1)[0] ?? "") === "line-400", 3_000);
+    reg.capLogs(1_000, 200);
+    const lines = tail(t.logPath, 100);
+    expect(lines[0]).toMatch(/^\[pi-bg\] log cut at /u);
+    // The task keeps appending after the cut.
+    expect(lines.at(-1)).toBe("line-400");
+    expect(fs.statSync(t.logPath).size).toBeLessThan(300);
+    await reg.kill(t.id, "agent");
   });
 });

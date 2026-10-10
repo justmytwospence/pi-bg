@@ -76,6 +76,13 @@ describe("log", () => {
     expect(grep(file, parsePattern("/error/"), 10)).toEqual(["error two"]);
   });
 
+  it("a log that only redraws one line with \\r still shows it; escapes from tput are stripped", () => {
+    const f = path.join(dir, "cr.log");
+    fs.writeFileSync(f, Array.from({ length: 60_000 }, (_, i) => `\r${i}%`).join(""));
+    expect(tail(f, 3)).toEqual(["59999%"]);
+    expect(cleanLine("\x1b(Bplain\x1b=")).toBe("plain");
+  });
+
   it("follows a growing file", () => {
     const f = path.join(dir, "b.log");
     fs.writeFileSync(f, "one\ntw");

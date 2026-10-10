@@ -10,8 +10,11 @@ const GREP_BYTES = 8 * 1024 * 1024;
 /** Longest line returned. */
 export const MAX_LINE = 400;
 
-// CSI, OSC (BEL or ST terminated) and two-character escapes.
-const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/gu;
+// CSI, OSC (BEL or ST terminated), charset selection (`\x1b(B` from `tput sgr0`), keypad modes,
+// and other two-character escapes.
+const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()*+][0-9A-Za-z@]|\x1b[=>]|\x1b[@-Z\\-_]/gu;
+/** The longest partial line a follower keeps (a progress bar redrawn with \r and no \n). */
+const MAX_PARTIAL = 64 * 1024;
 
 export function cleanLine(line: string): string {
   let l = line.replace(ANSI, "");
@@ -48,7 +51,8 @@ function lastLines(path: string, bytes: number): { lines: string[]; truncated: b
   const start = Math.max(0, size - bytes);
   const text = readRange(path, start, size - start);
   const lines = text.split("\n");
-  if (start > 0) lines.shift();
+  // The first line was cut mid-way, unless it is the only one (output redrawn with \r, no \n at all).
+  if (start > 0 && lines.length > 1) lines.shift();
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   return { lines, truncated: start > 0 };
 }
@@ -93,7 +97,8 @@ export class LogFollower {
     const text = this.partial + readRange(this.path, this.offset, chunk);
     this.offset += chunk;
     const lines = text.split("\n");
-    this.partial = lines.pop() ?? "";
+    // A line that never ends (a \r progress bar) is kept short: only its latest drawing matters.
+    this.partial = (lines.pop() ?? "").slice(-MAX_PARTIAL);
     return lines.map(cleanLine);
   }
 

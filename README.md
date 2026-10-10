@@ -12,6 +12,8 @@ both are there.
   `bg_wait` instead of ending its turn, so pi, herdr and tmux show it as working until the job
   ends. Typing a message stops the wait (the job keeps running and still wakes the agent), as do
   Esc and the wait's timeout.
+- **The UI is Claude Code's**: a pill under the prompt and a background-tasks dialog (below), so it
+  feels the same as Claude Code, and close to Codex and Gemini CLI.
 
 ## Tools
 
@@ -25,56 +27,56 @@ both are there.
 Ids also accept a task's name or a unique id prefix. A command that fails within 1.5 s is reported
 in `bg_run`'s own result.
 
+A wake-up goes out only while pi is idle: one that comes due during a turn waits for the turn to
+settle (a follow-up queued mid-turn is dropped when you press Esc), and several that pile up go out
+as one message. Whatever `bg_wait`, `bg_logs` or `bg_kill` has already shown the agent is no longer
+owed. A task that ends during `/reload` wakes the agent once the new session is up.
+
 ## Processes and files
 
 Each task runs `bash -c <command>` in its own process group, stdout and stderr appended to
 `~/.pi/agent/bg/<session>/<id>.log` (nothing is written into the project; `PI_BG_DIR` moves it).
-Tasks survive `/reload`. Quitting, `/new`, `/resume` and `/fork` stop them, except services with
-`keep: true`: those keep running, and the next pi started in or above their directory adopts them
-(lists them, can stop them). `~/.pi/agent/bg/state.json` records running tasks, so a pi that
-crashed has its leftovers killed by the next one. Logs older than a week are deleted.
+A log past 64 MB is cut back to its last megabyte. Tasks survive `/reload` (the new code takes the
+running tasks over). Quitting, `/new`, `/resume` and `/fork` stop them, along with anything a task
+left running in its process group (`npm run dev &`), except services with `keep: true`: those keep
+running, and the next pi started in or above their directory adopts them (lists them, can stop
+them). Each pi records its running tasks in `~/.pi/agent/bg/state/<pid>.json`, so a pi that crashed
+has its leftovers killed by the next one; a pid is only signalled or adopted while it still runs the
+task's command, never when it has been reused. Logs older than a week are deleted.
 
 ## UI
 
-- **Widget** above the editor, like pi-subagents' (a section of its panel when it is installed):
-  double-click a row to open its log (fullscreen mode). Each running task (spinner, name, kind, time,
-  `waiting` while a `bg_wait` is on it, `yours` for `/bg run`, `kept`, the command) with its latest
-  log line beneath, then what ended: a success for 8 s; a failure, timeout or stop until your next
-  message, several of them sharing one row (`✗ lint exit 1 after 0:10 · +2 more ended`), with the
-  last log line. It hides when nothing is left to show.
+Laid out the way Claude Code does it (2.1.296), with the same keys:
 
-  ```
-  ● Background  1 running, 1 service
-  ├─ ⠋ tests  job · 2:14 · waiting · npm test
-  │    ⎿  ✓ 212 passed, 3 skipped
-  ├─ ● vite  service · ready 0:34 · npm run dev
-  │    ⎿  Local: http://localhost:5173/
-  └─ ✗ lint  exit 1 after 0:10 · src/a.ts:3 unused import
-  ```
-- **Footer** status `bg` instead, with `/bg widget off` (saved in `~/.pi/agent/bg/settings.json`)
-  or outside the TUI: `bg: tests 2:14 · vite ready · lint ✗`. [pi-status-footer](https://github.com/justmytwospence/pi-status-footer)
-  gives it a row of its own.
-- **`/bg`**: pick a task, then view its log (a live overlay: ↑↓ PgUp/PgDn g/G, `x` twice stops,
-  Esc closes), stop, rerun, follow it in a herdr split, or put its log path in the editor.
-  `/bg run <command>` starts a job yourself (it notifies you when it ends and does not wake the
-  agent), `/bg kill <id>`, `/bg clear` hides ended tasks, `/bg widget on|off`.
+- **Pill under the prompt**: `1 shell`, `2 shells`, and `· 1 failed` in the error color while a
+  failure you have not seen is there (until your next message, or `x` in the dialog). `↓` at an
+  empty prompt selects it, Enter (or a click, in fullscreen mode) opens the dialog, Esc or `↑` goes
+  back. Nothing above the prompt.
+- **Background-tasks dialog** (`/tasks`, also `/bashes`, `/ps`, `/bg`): every task, running first,
+  then what ended (newest first), each with its command and state (`waiting` while a `bg_wait` is on
+  it, `ready` for a service). ↑↓ select; Enter opens the task's live log (↑↓ PgUp/PgDn g/G scroll,
+  `x` twice stops, Esc comes back to the dialog); `x` twice stops a running task, `x` on an ended one
+  dismisses it; `r` reruns; `f` follows the log in a herdr split; Esc closes.
+- **Commands**: `/tasks run <command>` starts a job yourself (it notifies you when it ends and does
+  not wake the agent), `/tasks kill <id>`, `/tasks clear` hides ended tasks, and `/stop` (Codex's)
+  stops every task this pi started.
+- **Outside the TUI** (RPC), a footer status `bg: tests 2:14 · vite ready · lint ✗` instead, which
+  [pi-status-footer](https://github.com/justmytwospence/pi-status-footer) gives a row of its own.
 
 ## With pi-subagents
 
 Both work alone. With [pi-subagents](https://github.com/justmytwospence/pi-subagents) installed
-too, they work as one (the activity protocol in `src/activity.ts`, copied into both repos):
+too, they work as one, as in Claude Code (the activity protocol in `src/activity.ts`, copied into
+both repos):
 
-- **One panel.** The background tasks become a section of the subagents panel above the editor,
-  under one line budget (16 rows, split by need), instead of a second panel.
-- **One keyboard list.** FleetView (below the editor; ↓ or ← at an empty prompt) lists the
-  background tasks after the subagents: Enter opens a task's log, `x` twice stops it.
+- **One list under the prompt.** pi-subagents' list (Claude Code's subagent panel: `main` and the
+  subagents) ends with this pill; ↓ moves through the subagents to the pill, and Enter on it opens
+  the dialog. pi-bg draws no pill of its own then.
+- **One dialog.** `/tasks` lists the subagents too, under their own heading: Enter opens a run's
+  conversation, `x` twice stops it, `x` on an ended one dismisses it.
 - **Waiting on subagents.** Async subagent runs are outside work `bg_wait subagent:<id>` can wait
   on inside the turn; the `subagent` tool's result names the ids. The run's result still arrives as
   its own message.
-- Double-clicking a row opens it in either panel: a task's log, a run's conversation.
-
-`/bg widget off` takes the tasks out of the shared panel and the list too, and brings back the
-footer status.
 
 ## Other extensions
 
@@ -84,13 +86,13 @@ All through `pi.events`; with nothing listening, nothing happens.
 |---|---|---|---|
 | `herdr:background` | emits | `{ active, label, id }` | held while an agent job runs that will wake the agent: pi-herdr shows it as the pane token `$bg` when the agent ends its turn instead of waiting |
 | `herdr:notify` | emits | `{ title, body, sound, unlessFocused }` | a task you started (or a kept service) ended |
-| `herdr:split` | emits | `{ command, cwd, done }` | `/bg`'s "follow in a herdr split" (`tail -F` on the log), offered when pi-herdr answers `herdr:probe` |
+| `herdr:split` | emits | `{ command, cwd, done }` | the dialog's "follow in a split" (`tail -F` on the log), offered when pi-herdr answers `herdr:probe` |
 | `bg:tasks` | emits | `{ tasks }` | a snapshot after every change: id, name, kind, command, cwd, status, ready, origin, keep, `willWake`, logPath |
 | `bg:killed` | emits | `{ id, command, cwd }` | after a task is stopped |
 | `bg:external` | reads | `{ id, label, state, summary? }` | outside work `bg_wait <id>` can wait on (`state`: `running`, `done`, `failed`), e.g. a busy marimo notebook |
 | `bg:probe` | reads | `{ reply }` | `reply()` when pi-bg is loaded |
-| `activity:section`, `activity:changed`, `activity:gone` | emits | `{ section }`, `{ id }` | the panel section offered to a host (pi-subagents); see `src/activity.ts` |
-| `activity:host` | reads | `{}` | a host is ready: offer the section again |
+| `activity:section`, `activity:changed`, `activity:gone` | both | `{ section }`, `{ id }` | sources of background work: ours (the pill, entries, the dialog) for a host to show under the prompt; others' (pi-subagents' runs) for the dialog; see `src/activity.ts` |
+| `activity:host` | reads | `{}` | a host is ready: offer our source again |
 
 herdr's pane state stays herdr's own (its pi integration): working while a turn runs, which
 `bg_wait` extends. When the agent ends its turn with a job running, the pane is idle or done and
