@@ -389,7 +389,7 @@ export default function piBg(pi: ExtensionAPI) {
   pi.registerTool({
     name: "bg_wait",
     label: "Wait",
-    description: `Wait inside this turn for a background job to end (or a service to become ready, when named), then get its outcome and the end of its log. Without id, waits for whichever running job ends first. Returns early when the user sends a message, on Esc, or after \`timeout\` seconds (default ${WAIT_DEFAULT_S}); the job keeps running and still wakes you when it ends.`,
+    description: `Wait inside this turn for a background job to end (or a service to become ready, when named), then get its outcome and the end of its log. Without id, waits for whichever running job ends first. `id` may also name outside work other extensions report, such as `marimo:<file>` for a running marimo notebook (pi-marimo). Returns early when the user sends a message, on Esc, or after \`timeout\` seconds (default ${WAIT_DEFAULT_S}); the job keeps running and still wakes you when it ends.`,
     promptSnippet: "Wait for a background job (keeps the turn working)",
     parameters: WaitParams,
     renderCall(args, theme) {
@@ -407,7 +407,8 @@ export default function piBg(pi: ExtensionAPI) {
           if (x.state !== "running") return text(externalLine(x));
           targets.add(x.id);
         } else if (!t) {
-          throw new Error(`No task or outside work matches "${params.id}". ${reg.list().length ? `Tasks: ${reg.list().map((k) => `${k.id} ${k.name}`).join(", ")}.` : "No tasks."}`);
+          const known = [...reg.list().map((k) => `${k.id} ${k.name}`), ...[...externals.values()].filter((e) => e.state === "running").map((e) => e.id)];
+          throw new Error(`No task or outside work matches "${params.id}". ${known.length ? `Known: ${known.join(", ")}.` : "Nothing is running."}`);
         } else if (t.status !== "running") {
           t.delivered = true;
           refresh();
