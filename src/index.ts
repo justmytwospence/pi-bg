@@ -27,8 +27,9 @@ import { Type } from "typebox";
 import { elapsed, footerStatus, header, marimoNote, nameFromCommand, outcome, report, runtime, taskLine } from "./format.ts";
 import { bounded, grep, head, tail } from "./log.ts";
 import { type Kind, type Task, type TaskEvent, bgDir, parsePattern, registry } from "./registry.ts";
+import { ACTIVITY_CHANGED, ACTIVITY_GONE, ACTIVITY_HOST, ACTIVITY_SECTION, type ActivityEntry, type ActivitySection } from "./activity.ts";
 import { LogViewer } from "./viewer.ts";
-import { TasksWidget } from "./widget.ts";
+import { TasksWidget, widgetTasks } from "./widget.ts";
 
 /** `~/.pi/agent/bg/settings.json`: `{ "widget": false }` turns the widget off (the footer status shows instead). */
 function loadWidgetSetting(): boolean {
@@ -137,8 +138,55 @@ export default function piBg(pi: ExtensionAPI) {
     }
     return ids;
   };
-  const widget = new TasksWidget({ tasks: () => reg.list(), waiting: waitingIds });
-  const widgetShown = () => widgetOn && ctx?.mode === "tui";
+  const widget = new TasksWidget({
+    tasks: () => reg.list(),
+    waiting: waitingIds,
+    open: (id) => {
+      const t = reg.tasks.get(id);
+      if (t && ctx) void openLog(ctx.ui, t);
+    },
+  });
+  /** pi-subagents shows our rows as a section of its panel (activity.ts). */
+  let hosted = false;
+  const tui = () => ctx?.mode === "tui";
+  const widgetShown = () => widgetOn && tui() && !hosted;
+  const entryStatus = (t: Task): ActivityEntry["status"] =>
+    t.status === "running" ? "running" : t.status === "done" ? "done" : t.status === "killed" ? "stopped" : "failed";
+  const section: ActivitySection = {
+    id: "bg",
+    title: "background tasks",
+    hasContent: (now) => widgetOn && widget.hasContent(now),
+    render: (f) => (widgetOn ? widget.section(f) : { lines: [], targets: [] }),
+    entries: (now) =>
+      widgetOn
+        ? widgetTasks(reg.list(), now).map((t) => ({
+            key: t.id,
+            label: t.name,
+            detail: t.command.replace(/\s+/gu, " ").trim(),
+            status: entryStatus(t),
+            stats: t.status === "running" ? `${t.kind === "service" ? (t.ready ? "ready " : "service ") : ""}${runtime(t, now)}` : `${outcome(t)} · ${runtime(t, now)}`,
+            startedAt: t.startedAt,
+          }))
+        : [],
+    open: (key, ui) => {
+      const t = reg.find(key);
+      return t ? openLog(ui as ExtensionContext["ui"], t) : Promise.resolve();
+    },
+    stop: (key) => {
+      const t = reg.find(key);
+      if (t?.status === "running") void stopTask(t, "user");
+    },
+    setHosted: (on) => {
+      hosted = on;
+      widget.setUI(widgetShown() ? (ctx?.ui as any) : undefined);
+      lastStatus = "\u0000";
+      refresh();
+    },
+  };
+  const offerSection = () => {
+    if (attached && tui()) emit(ACTIVITY_SECTION, { section });
+  };
+  pi.events.on(ACTIVITY_HOST, () => offerSection());
 
   const emit = (channel: string, data: unknown) => {
     try {
@@ -165,7 +213,7 @@ export default function piBg(pi: ExtensionAPI) {
 
   const updateStatus = () => {
     if (!attached || !ctx?.hasUI) return;
-    const s = widgetShown() ? undefined : footerStatus(reg.list());
+    const s = widgetOn && tui() ? undefined : footerStatus(reg.list());
     if (s === lastStatus) return;
     lastStatus = s;
     ctx.ui.setStatus("bg", s);
@@ -190,6 +238,7 @@ export default function piBg(pi: ExtensionAPI) {
   const refresh = () => {
     updateStatus();
     widget.update();
+    if (hosted) emit(ACTIVITY_CHANGED, { id: section.id });
     syncHolds();
     emit("bg:tasks", { tasks: snapshot() });
   };
@@ -338,7 +387,9 @@ export default function piBg(pi: ExtensionAPI) {
       const adopted = reg.sweep(c.cwd);
       if (adopted.length && c.hasUI) c.ui.notify(`bg: adopted kept service${adopted.length > 1 ? "s" : ""} ${adopted.map((t) => t.name).join(", ")}`, "info");
     }
+    hosted = false;
     widget.setUI(widgetShown() ? (c.ui as any) : undefined);
+    offerSection();
     unsubscribe?.();
     unsubscribe = reg.subscribe(onTask);
     for (const t of reg.list()) if (t.pendingWake) wake(t, t.pendingWake);
@@ -364,6 +415,8 @@ export default function piBg(pi: ExtensionAPI) {
     if (statusTimer) clearInterval(statusTimer);
     statusTimer = undefined;
     widget.dispose();
+    if (attached) emit(ACTIVITY_GONE, { id: section.id });
+    hosted = false;
     for (const w of [...waiters]) w.resolve("aborted");
     for (const id of holds) emit("herdr:background", { active: false, id: `bg:${id}` });
     holds.clear();
@@ -494,7 +547,7 @@ export default function piBg(pi: ExtensionAPI) {
         if (++ticks % 4 === 0) setWorking();
         return undefined;
       });
-      widget.update();
+      refresh();
       const reason = await done;
       if (c.hasUI) c.ui.setWorkingMessage();
       refresh();
@@ -507,7 +560,7 @@ export default function piBg(pi: ExtensionAPI) {
         const what = still.length ? still.map((t) => `${t.name} (${t.id}, ${runtime(t)})`).join(", ") : label();
         const why =
           reason === "message"
-            ? "Stopped waiting: the user sent a message."
+            ? "Stopped waiting: a message arrived for you (from the user, or another extension's result)."
             : reason === "aborted"
               ? "Stopped waiting: interrupted."
               : `Stopped waiting after ${elapsed(Date.now() - started)} (the timeout).`;
@@ -571,12 +624,8 @@ export default function piBg(pi: ExtensionAPI) {
 
   // ---- /bg ----
 
-  const openLog = async (c: ExtensionContext, t: Task) => {
-    if (c.mode !== "tui") {
-      c.ui.notify(tail(t.logPath, 20).join("\n") || "(no output)", "info");
-      return;
-    }
-    await c.ui.custom<void>(
+  const openLog = async (ui: ExtensionContext["ui"], t: Task) => {
+    await ui.custom<void>(
       (tui, theme, _kb, done) => new LogViewer(tui as any, theme as any, t, t.status === "running" ? () => void stopTask(t, "user") : undefined, () => done(undefined)),
       { overlay: true, overlayOptions: { anchor: "center", width: "90%", maxHeight: "80%" } },
     );
@@ -642,7 +691,10 @@ export default function piBg(pi: ExtensionAPI) {
       if (herdrActive) actions.push("Follow in a herdr split");
       actions.push("Copy log path to the editor");
       const action = await c.ui.select(`${t.name}: ${outcome(t)} after ${runtime(t)}`, actions);
-      if (action === "View log") await openLog(c, t);
+      if (action === "View log") {
+        if (c.mode === "tui") await openLog(c.ui, t);
+        else c.ui.notify(tail(t.logPath, 20).join("\n") || "(no output)", "info");
+      }
       else if (action === "Stop") {
         await stopTask(t, "user");
         c.ui.notify(`bg: stopped ${t.name}`, "info");

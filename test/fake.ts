@@ -40,6 +40,7 @@ export function fakeCtx(cwd: string) {
   const working: (string | undefined)[] = [];
   const state = { pending: false };
   const widgets = new Map<string, any>();
+  const opened: any[] = [];
   const ctx = {
     mode: "tui",
     hasUI: true,
@@ -53,6 +54,9 @@ export function fakeCtx(cwd: string) {
       setWorkingMessage: (m?: string) => working.push(m),
       select: async () => undefined,
       pasteToEditor: () => {},
+      custom: async (factory: any) => {
+        opened.push(factory);
+      },
     },
   };
   /** The widget's current lines, rendered at `width` with a plain theme. */
@@ -62,7 +66,12 @@ export function fakeCtx(cwd: string) {
     const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
     return factory({ requestRender: () => {} }, theme).render(width);
   };
-  return { ctx, status, notes, working, state, widgets, widgetLines };
+  /** The widget component itself, to send it mouse events. */
+  const widgetComponent = (key = "pi-bg") => {
+    const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+    return widgets.get(key)?.({ requestRender: () => {} }, theme);
+  };
+  return { ctx, status, notes, working, state, widgets, widgetLines, widgetComponent, opened };
 }
 
 export async function until(cond: () => boolean, ms = 5_000): Promise<void> {

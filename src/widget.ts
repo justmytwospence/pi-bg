@@ -1,8 +1,10 @@
 // The live background-task widget above the editor, in the style of pi-subagents' widget: one row
 // per running task (spinner, name, kind, time, tags, command) with its latest log line beneath,
 // then tasks that ended for a few seconds with their outcome. It registers once and refreshes with
-// requestRender(), and hides itself when nothing is left to show.
-import type { TUI } from "@earendil-works/pi-tui";
+// requestRender(), and hides itself when nothing is left to show. Double-clicking a task's row
+// (fullscreen mode, where pi passes mouse events to widgets) opens its log. With pi-subagents
+// installed, the same rows are a section of its panel instead (activity.ts).
+import type { TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { outcome, runtime } from "./format.ts";
 import { tail } from "./log.ts";
@@ -10,7 +12,7 @@ import type { Task } from "./registry.ts";
 
 const WIDGET_KEY = "pi-bg";
 /** Content rows before the rest collapse into `+N more`. */
-const MAX_LINES = 12;
+export const MAX_LINES = 12;
 const FRAME_MS = 100;
 /** How often a running task's latest log line is read again. */
 const LAST_LINE_MS = 1_000;
@@ -33,6 +35,8 @@ export function widgetTasks(tasks: readonly Task[], now: number): Task[] {
 }
 
 export interface WidgetFrame {
+  /** Rows at most, header included (default 12). */
+  maxLines?: number;
   tasks: readonly Task[];
   /** Tasks a bg_wait is waiting on. */
   waiting: ReadonlySet<string>;
@@ -46,10 +50,17 @@ export interface WidgetFrame {
 const oneLine = (s: string) => s.replace(/\s+/gu, " ").trim();
 
 /** The widget's lines, or [] when there is nothing to show. */
-export function renderWidget({ tasks, waiting, lastLine, now, frame, width, theme }: WidgetFrame): string[] {
+export function renderWidget(f: WidgetFrame): string[] {
+  const { lines } = renderSection(f);
+  return lines.length ? withSpacer(lines) : lines;
+}
+
+/** The rows without the trailing spacer, and which task each line belongs to. */
+export function renderSection({ tasks, waiting, lastLine, now, frame, width, theme, maxLines = MAX_LINES }: WidgetFrame): { lines: string[]; targets: (string | undefined)[] } {
   const running = tasks.filter((t) => t.status === "running");
   const ended = tasks.filter((t) => t.status !== "running");
-  if (!running.length && !ended.length) return [];
+  if (!running.length && !ended.length) return { lines: [], targets: [] };
+  const max = Math.max(2, maxLines);
   const cut = (line: string) => truncateToWidth(line, width);
   const spinner = SPINNER[frame % SPINNER.length] ?? "●";
   const dot = theme.fg("dim", " · ");
@@ -83,33 +94,43 @@ export function renderWidget({ tasks, waiting, lastLine, now, frame, width, them
   const active = running.length > 0;
   const color = active ? "accent" : "dim";
   const lines = [cut(`${theme.fg(color, active ? "●" : "○")} ${theme.fg(color, "Background")}${counts ? theme.fg("dim", `  ${counts}`) : ""}`)];
+  const targets: (string | undefined)[] = [undefined];
 
   const body = runningRows.length * 2 + endedRows.length;
-  if (body <= MAX_LINES - 1) {
-    for (const pair of runningRows) lines.push(...pair);
-    lines.push(...endedRows);
+  if (body <= max - 1) {
+    running.forEach((t, i) => {
+      lines.push(...(runningRows[i] as string[]));
+      targets.push(t.id, t.id);
+    });
+    ended.forEach((t, i) => {
+      lines.push(endedRows[i] as string);
+      targets.push(t.id);
+    });
     closeTree(lines, !endedRows.length && runningRows.length > 0);
-    return withSpacer(lines);
+    return { lines, targets };
   }
   // Too many: running first, then ended; the rest becomes `+N more`.
-  let budget = MAX_LINES - 2;
+  let budget = max - 2;
   let hiddenRunning = 0;
   let hiddenEnded = 0;
-  for (const pair of runningRows) {
+  running.forEach((t, i) => {
     if (budget >= 2) {
-      lines.push(...pair);
+      lines.push(...(runningRows[i] as string[]));
+      targets.push(t.id, t.id);
       budget -= 2;
     } else hiddenRunning++;
-  }
-  for (const row of endedRows) {
+  });
+  ended.forEach((t, i) => {
     if (budget >= 1) {
-      lines.push(row);
+      lines.push(endedRows[i] as string);
+      targets.push(t.id);
       budget--;
     } else hiddenEnded++;
-  }
+  });
   const hidden = [hiddenRunning ? `${hiddenRunning} running` : "", hiddenEnded ? `${hiddenEnded} ended` : ""].filter(Boolean).join(", ");
   lines.push(cut(`${theme.fg("dim", "└─")} ${theme.fg("dim", `+${hiddenRunning + hiddenEnded} more (${hidden}) · /bg`)}`));
-  return withSpacer(lines);
+  targets.push(undefined);
+  return { lines, targets };
 }
 
 /** A blank row below, so the tree does not touch the editor's border. */
@@ -130,13 +151,24 @@ function closeTree(lines: string[], lastIsRunning: boolean) {
 
 /** The part of `ctx.ui` the widget uses. */
 export interface WidgetUI {
-  setWidget(key: string, content: ((tui: TUI, theme: any) => { render(width: number): string[]; invalidate(): void }) | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }): void;
+  setWidget(
+    key: string,
+    content: ((tui: TUI, theme: any) => { render(width: number): string[]; invalidate(): void; handleMouse?(e: TuiMouseEvent): TuiMouseEventResult | undefined }) | undefined,
+    options?: { placement?: "aboveEditor" | "belowEditor" },
+  ): void;
   readonly theme?: Theme;
 }
 
 export interface WidgetSource {
   tasks(): readonly Task[];
   waiting(): ReadonlySet<string>;
+  /** A row was double-clicked: open that task's log. */
+  open?(id: string): void;
+}
+
+/** A double-click of the left button (pi passes mouse events only in fullscreen mode). */
+export function isDoubleClick(e: TuiMouseEvent): boolean {
+  return e.type === "click" && e.button === "left" && (e.clickCount ?? 1) >= 2;
 }
 
 export class TasksWidget {
@@ -175,6 +207,16 @@ export class TasksWidget {
     return widgetTasks(this.source.tasks(), now);
   }
 
+  /** Whether there is anything to show now. */
+  hasContent(now = Date.now()): boolean {
+    return this.visible(now).length > 0;
+  }
+
+  /** The rows (no spacer), for this widget or a host's panel. */
+  section(f: { width: number; theme: Theme; now: number; frame: number; maxLines: number }): { lines: string[]; targets: (string | undefined)[] } {
+    return renderSection({ tasks: this.visible(f.now), waiting: this.source.waiting(), lastLine: (t) => this.lastLine(t, f.now), ...f });
+  }
+
   update(): void {
     if (!this.ui) return;
     if (!this.visible(Date.now()).length) {
@@ -193,22 +235,25 @@ export class TasksWidget {
       return;
     }
     const ui = this.ui;
+    let targets: (string | undefined)[] = [];
     ui.setWidget(
       WIDGET_KEY,
       (tui, factoryTheme: Theme) => {
         this.tui = tui;
         return {
           render: (width: number) => {
-            const now = Date.now();
-            return renderWidget({
-              tasks: this.visible(now),
-              waiting: this.source.waiting(),
-              lastLine: (t) => this.lastLine(t, now),
-              now,
-              frame: this.frame,
-              width,
-              theme: ui.theme ?? factoryTheme,
-            });
+            const r = this.section({ width, theme: ui.theme ?? factoryTheme, now: Date.now(), frame: this.frame, maxLines: MAX_LINES });
+            targets = r.targets;
+            return r.lines.length ? withSpacer(r.lines) : r.lines;
+          },
+          handleMouse: (e: TuiMouseEvent): TuiMouseEventResult | undefined => {
+            const id = targets[e.y];
+            if (!id || !this.source.open) return undefined;
+            // pi turns a press and release into a click only for the component that took the press.
+            if (e.type === "press" && e.button === "left") return { handled: true, render: false };
+            if (!isDoubleClick(e)) return undefined;
+            this.source.open(id);
+            return { handled: true };
           },
           invalidate: () => undefined,
         };

@@ -36,7 +36,8 @@ crashed has its leftovers killed by the next one. Logs older than a week are del
 
 ## UI
 
-- **Widget** above the editor, like pi-subagents': each running task (spinner, name, kind, time,
+- **Widget** above the editor, like pi-subagents' (a section of its panel when it is installed):
+  double-click a row to open its log (fullscreen mode). Each running task (spinner, name, kind, time,
   `waiting` while a `bg_wait` is on it, `yours` for `/bg run`, `kept`, the command) with its latest
   log line beneath, then what ended (8 s after success, 20 s after a failure or stop, with the last
   line of a failure). It hides when nothing is left to show.
@@ -57,6 +58,23 @@ crashed has its leftovers killed by the next one. Logs older than a week are del
   `/bg run <command>` starts a job yourself (it notifies you when it ends and does not wake the
   agent), `/bg kill <id>`, `/bg clear` hides ended tasks, `/bg widget on|off`.
 
+## With pi-subagents
+
+Both work alone. With [pi-subagents](https://github.com/justmytwospence/pi-subagents) installed
+too, they work as one (the activity protocol in `src/activity.ts`, copied into both repos):
+
+- **One panel.** The background tasks become a section of the subagents panel above the editor,
+  under one line budget (16 rows, split by need), instead of a second panel.
+- **One keyboard list.** FleetView (below the editor; ↓ or ← at an empty prompt) lists the
+  background tasks after the subagents: Enter opens a task's log, `x` twice stops it.
+- **Waiting on subagents.** Async subagent runs are outside work `bg_wait subagent:<id>` can wait
+  on inside the turn; the `subagent` tool's result names the ids. The run's result still arrives as
+  its own message.
+- Double-clicking a row opens it in either panel: a task's log, a run's conversation.
+
+`/bg widget off` takes the tasks out of the shared panel and the list too, and brings back the
+footer status.
+
 ## Other extensions
 
 All through `pi.events`; with nothing listening, nothing happens.
@@ -70,6 +88,8 @@ All through `pi.events`; with nothing listening, nothing happens.
 | `bg:killed` | emits | `{ id, command, cwd }` | after a task is stopped |
 | `bg:external` | reads | `{ id, label, state, summary? }` | outside work `bg_wait <id>` can wait on (`state`: `running`, `done`, `failed`), e.g. a busy marimo notebook |
 | `bg:probe` | reads | `{ reply }` | `reply()` when pi-bg is loaded |
+| `activity:section`, `activity:changed`, `activity:gone` | emits | `{ section }`, `{ id }` | the panel section offered to a host (pi-subagents); see `src/activity.ts` |
+| `activity:host` | reads | `{}` | a host is ready: offer the section again |
 
 herdr's pane state stays herdr's own (its pi integration): working while a turn runs, which
 `bg_wait` extends. When the agent ends its turn with a job running, the pane is idle or done and

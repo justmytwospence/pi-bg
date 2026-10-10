@@ -78,7 +78,7 @@ describe("pi-bg", () => {
       x.state.pending = true;
     }, 300);
     const r = x.textOf(await x.call("bg_wait", { id: "long" }));
-    expect(r).toMatch(/user sent a message/);
+    expect(r).toMatch(/a message arrived for you/);
     expect(r).toMatch(/Still running: long/);
     x.state.pending = false;
     await until(() => x.sent.length > 0, 5_000);
@@ -131,6 +131,53 @@ describe("pi-bg", () => {
     await x.commands.get("bg").handler("widget on", x.ctx);
     expect(x.status.get("bg")).toBeUndefined();
     await x.shutdown();
+  });
+
+  it("a double-click on a task's row opens its log", async () => {
+    const x = await load();
+    await x.call("bg_run", { command: "sleep 3", kind: "job", name: "clicky" });
+    const w = x.widgetComponent();
+    w.render(120);
+    const click = (y: number, clickCount: number) => w.handleMouse({ type: "click", button: "left", x: 5, y, clickCount, screenX: 0, screenY: 0, width: 120, height: 4, shift: false, alt: false, ctrl: false });
+    expect(click(1, 1)).toBeUndefined();
+    expect(click(0, 2)).toBeUndefined(); // the header
+    // A press on a row is taken, so pi turns its release into a click for this widget.
+    expect(w.handleMouse({ type: "press", button: "left", x: 5, y: 1, screenX: 0, screenY: 0, width: 120, height: 4, shift: false, alt: false, ctrl: false })).toEqual({ handled: true, render: false });
+    expect(click(2, 2)).toEqual({ handled: true }); // the log line belongs to the task too
+    expect(x.opened).toHaveLength(1);
+    await x.shutdown();
+  });
+
+  it("with an activity host (pi-subagents), its rows become a section of the host's panel", async () => {
+    const { ACTIVITY_HOST, ACTIVITY_SECTION } = await import("../src/activity.ts");
+    const x = await load();
+    const offered = x.emitted.filter((e) => e.channel === ACTIVITY_SECTION);
+    expect(offered).toHaveLength(1);
+    const section = offered[0]?.data.section;
+    // A host that loads later asks again.
+    x.pi.events.emit(ACTIVITY_HOST, {});
+    expect(x.emitted.filter((e) => e.channel === ACTIVITY_SECTION)).toHaveLength(2);
+    section.setHosted(true);
+    await x.call("bg_run", { command: "echo out; sleep 3", kind: "job", name: "hosted" });
+    expect(x.widgets.has("pi-bg")).toBe(false);
+    expect(x.status.get("bg")).toBeUndefined();
+    expect(x.emitted.some((e) => e.channel === "activity:changed")).toBe(true);
+    const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+    const r = section.render({ width: 120, theme, now: Date.now(), frame: 0, maxLines: 4 });
+    expect(r.lines[0]).toBe("● Background  1 running");
+    expect(r.lines[1]).toMatch(/^└─ ⠋ hosted {2}job · 0:0\d · echo out; sleep 3$/u);
+    expect(r.targets).toEqual([undefined, expect.any(String), expect.any(String)]);
+    const entries = section.entries(Date.now());
+    expect(entries).toMatchObject([{ label: "hosted", detail: "echo out; sleep 3", status: "running" }]);
+    await section.open(entries[0].key, x.ctx.ui);
+    expect(x.opened).toHaveLength(1);
+    section.stop(entries[0].key);
+    await until(() => section.entries(Date.now())[0]?.status === "stopped", 5_000);
+    // The host goes away: our own widget is back.
+    section.setHosted(false);
+    expect(x.widgets.has("pi-bg")).toBe(true);
+    await x.shutdown();
+    expect(x.emitted.some((e) => e.channel === "activity:gone")).toBe(true);
   });
 
   it("kills its tasks when the session ends, but not on reload", async () => {
