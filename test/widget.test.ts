@@ -20,8 +20,8 @@ const task = (over: Partial<Task>): Task => ({
   ...over,
 });
 
-const frame = (tasks: Task[], now: number, waiting: string[] = []) =>
-  renderWidget({ tasks: widgetTasks(tasks, now), waiting: new Set(waiting), lastLine: (t) => `last of ${t.name}`, now, frame: 0, width: 120, theme });
+const frame = (tasks: Task[], now: number, waiting: string[] = [], dismissedAt = 0) =>
+  renderWidget({ tasks: widgetTasks(tasks, now, dismissedAt), waiting: new Set(waiting), lastLine: (t) => `last of ${t.name}`, now, frame: 0, width: 120, theme });
 
 describe("widget", () => {
   it("running jobs and services with their last line, then what ended", () => {
@@ -50,6 +50,19 @@ describe("widget", () => {
   it("only what ended: dim header; empty: nothing", () => {
     expect(frame([task({ status: "done", exitCode: 0, startedAt: 0, endedAt: 5_000 })], 6_000)).toEqual(["○ Background", "└─ ✓ tests  exit 0 after 0:05", ""]);
     expect(frame([task({ status: "done", exitCode: 0, endedAt: 0 })], 60_000)).toEqual([]);
+  });
+
+  it("failures and stops stay until the user's next message, sharing one row", () => {
+    const now = 600_000;
+    const tasks = [
+      task({ id: "a", name: "lint", status: "failed", exitCode: 1, startedAt: 0, endedAt: 100_000 }),
+      task({ id: "b", name: "srv", kind: "service", status: "killed", killedBy: "agent", startedAt: 0, endedAt: 200_000 }),
+      task({ id: "c", name: "slow", status: "timeout", timeoutSec: 5, startedAt: 0, endedAt: 300_000 }),
+    ];
+    expect(frame(tasks, now)).toEqual(["○ Background", "└─ ✗ slow  timed out after 5:00 · +2 more ended · last of slow", ""]);
+    // A message after the first two ended: only the third is left.
+    expect(frame(tasks, now, [], 250_000)).toEqual(["○ Background", "└─ ✗ slow  timed out after 5:00 · last of slow", ""]);
+    expect(frame(tasks, now, [], 300_000)).toEqual([]);
   });
 
   it("too many rows collapse into +N more", () => {

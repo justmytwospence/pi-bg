@@ -31,7 +31,7 @@ export function outcome(t: Task): string {
     case "running":
       return t.kind === "service" ? (t.ready ? "ready" : "starting") : "running";
     case "timeout":
-      return `timed out after ${t.timeoutSec}s`;
+      return "timed out";
     case "killed":
       return t.killedBy === "user" ? "stopped by the user" : "stopped";
     default:

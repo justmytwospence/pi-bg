@@ -17,21 +17,22 @@ const FRAME_MS = 100;
 /** How often a running task's latest log line is read again. */
 const LAST_LINE_MS = 1_000;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-/** How long an ended task stays: a success briefly, a failure or stop a little longer. */
-export const LINGER_MS = { done: 8_000, other: 20_000 };
+/** How long a task that succeeded stays. A failure, timeout or stop stays until the user's next message. */
+export const LINGER_MS = { done: 8_000 };
 
 export interface Theme {
   fg(color: string, text: string): string;
   bold(text: string): string;
 }
 
-export function lingers(t: Task, now: number): boolean {
+/** Whether an ended task still shows: a success for 8 s; anything else until a message after it ended (`dismissedAt`). */
+export function lingers(t: Task, now: number, dismissedAt: number): boolean {
   if (t.status === "running" || t.endedAt === undefined) return false;
-  return now - t.endedAt < (t.status === "done" ? LINGER_MS.done : LINGER_MS.other);
+  return t.status === "done" ? now - t.endedAt < LINGER_MS.done : t.endedAt > dismissedAt;
 }
 
-export function widgetTasks(tasks: readonly Task[], now: number): Task[] {
-  return tasks.filter((t) => t.status === "running" || lingers(t, now));
+export function widgetTasks(tasks: readonly Task[], now: number, dismissedAt: number): Task[] {
+  return tasks.filter((t) => t.status === "running" || lingers(t, now, dismissedAt));
 }
 
 export interface WidgetFrame {
@@ -58,7 +59,12 @@ export function renderWidget(f: WidgetFrame): string[] {
 /** The rows without the trailing spacer, and which task each line belongs to. */
 export function renderSection({ tasks, waiting, lastLine, now, frame, width, theme, maxLines = MAX_LINES }: WidgetFrame): { lines: string[]; targets: (string | undefined)[] } {
   const running = tasks.filter((t) => t.status === "running");
-  const ended = tasks.filter((t) => t.status !== "running");
+  // Successes one row each; failures and stops share one row, the latest, with a count of the rest.
+  const done = tasks.filter((t) => t.status === "done");
+  const held = tasks.filter((t) => t.status !== "running" && t.status !== "done").sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0));
+  const latest = held.at(-1);
+  const ended = latest ? [...done, latest] : done;
+  const moreEnded = held.length - 1;
   if (!running.length && !ended.length) return { lines: [], targets: [] };
   const max = Math.max(2, maxLines);
   const cut = (line: string) => truncateToWidth(line, width);
@@ -85,7 +91,8 @@ export function renderSection({ tasks, waiting, lastLine, now, frame, width, the
     const what = `${outcome(t)} after ${runtime(t, now)}`;
     const bad = t.status === "failed" || t.status === "timeout";
     const last = bad ? lastLine(t) : undefined;
-    return cut(`${theme.fg("dim", "├─")} ${icon} ${theme.fg("muted", t.name)}  ${bad ? theme.fg("error", what) : theme.fg("dim", what)}${last ? theme.fg("dim", ` · ${oneLine(last)}`) : ""}`);
+    const more = t === latest && moreEnded > 0 ? theme.fg("dim", ` · +${moreEnded} more ended`) : "";
+    return cut(`${theme.fg("dim", "├─")} ${icon} ${theme.fg("muted", t.name)}  ${bad ? theme.fg("error", what) : theme.fg("dim", what)}${more}${last ? theme.fg("dim", ` · ${oneLine(last)}`) : ""}`);
   });
 
   const jobs = running.filter((t) => t.kind === "job").length;
@@ -162,6 +169,8 @@ export interface WidgetUI {
 export interface WidgetSource {
   tasks(): readonly Task[];
   waiting(): ReadonlySet<string>;
+  /** When the user last sent a message: failures and stops that ended before it are hidden. */
+  dismissedAt(): number;
   /** A row was double-clicked: open that task's log. */
   open?(id: string): void;
 }
@@ -204,7 +213,7 @@ export class TasksWidget {
   }
 
   private visible(now: number): Task[] {
-    return widgetTasks(this.source.tasks(), now);
+    return widgetTasks(this.source.tasks(), now, this.source.dismissedAt());
   }
 
   /** Whether there is anything to show now. */

@@ -138,9 +138,12 @@ export default function piBg(pi: ExtensionAPI) {
     }
     return ids;
   };
+  /** When the user last sent a message: ended failures and stops leave the panel then. */
+  let dismissedAt = 0;
   const widget = new TasksWidget({
     tasks: () => reg.list(),
     waiting: waitingIds,
+    dismissedAt: () => dismissedAt,
     open: (id) => {
       const t = reg.tasks.get(id);
       if (t && ctx) void openLog(ctx.ui, t);
@@ -159,7 +162,7 @@ export default function piBg(pi: ExtensionAPI) {
     render: (f) => (widgetOn ? widget.section(f) : { lines: [], targets: [] }),
     entries: (now) =>
       widgetOn
-        ? widgetTasks(reg.list(), now).map((t) => ({
+        ? widgetTasks(reg.list(), now, dismissedAt).map((t) => ({
             key: t.id,
             label: t.name,
             detail: t.command.replace(/\s+/gu, " ").trim(),
@@ -401,6 +404,13 @@ export default function piBg(pi: ExtensionAPI) {
     });
     statusTimer = setInterval(updateStatus, 1_000);
     statusTimer.unref?.();
+    refresh();
+  });
+
+  // The user's next message dismisses failures and stops they have had a chance to see.
+  pi.on("input", (event) => {
+    if ((event as { source?: string }).source !== "interactive") return;
+    dismissedAt = Date.now();
     refresh();
   });
 

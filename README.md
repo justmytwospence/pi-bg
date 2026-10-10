@@ -39,8 +39,9 @@ crashed has its leftovers killed by the next one. Logs older than a week are del
 - **Widget** above the editor, like pi-subagents' (a section of its panel when it is installed):
   double-click a row to open its log (fullscreen mode). Each running task (spinner, name, kind, time,
   `waiting` while a `bg_wait` is on it, `yours` for `/bg run`, `kept`, the command) with its latest
-  log line beneath, then what ended (8 s after success, 20 s after a failure or stop, with the last
-  line of a failure). It hides when nothing is left to show.
+  log line beneath, then what ended: a success for 8 s; a failure, timeout or stop until your next
+  message, several of them sharing one row (`✗ lint exit 1 after 0:10 · +2 more ended`), with the
+  last log line. It hides when nothing is left to show.
 
   ```
   ● Background  1 running, 1 service
