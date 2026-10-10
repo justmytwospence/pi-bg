@@ -44,7 +44,11 @@ describe("pi-bg", () => {
     expect(r).toMatch(/Started build/);
     const hold = x.emitted.find((e) => e.channel === "herdr:background" && e.data.active);
     expect(hold?.data.label).toBe("build");
-    expect(x.status.get("bg")).toMatch(/^bg: build 0:0\d$/u);
+    // The widget, not the footer status, shows it in the TUI.
+    expect(x.status.get("bg")).toBeUndefined();
+    const lines = x.widgetLines() ?? [];
+    expect(lines[0]).toBe("● Background  1 running");
+    expect(lines[1]).toMatch(/^└─ \S build  job · 0:0\d · sleep 2; echo built$/u);
     await until(() => x.sent.length > 0, 5_000);
     const wake = x.sent[0];
     expect(wake?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
@@ -108,6 +112,24 @@ describe("pi-bg", () => {
     setTimeout(() => x.pi.events.emit("bg:external", { id: "marimo:fit.py", label: "fit.py", state: "done", summary: "ran 0:01" }), 300);
     const w = x.textOf(await x.call("bg_wait", { id: "marimo:fit.py" }));
     expect(w).toBe("fit.py (marimo:fit.py): done · ran 0:01");
+    await x.shutdown();
+  });
+
+  it("the widget shows the waiting tag and the latest log line; /bg widget off brings back the footer status", async () => {
+    const x = await load();
+    await x.call("bg_run", { command: "echo first; echo second; sleep 2", kind: "job", name: "tagged" });
+    const waiting = x.call("bg_wait", { id: "tagged" });
+    await until(() => (x.widgetLines() ?? []).some((l) => l.includes("waiting")), 2_000);
+    const lines = x.widgetLines() ?? [];
+    expect(lines[1]).toMatch(/tagged {2}job · 0:0\d · waiting · echo first/u);
+    expect(lines[2]).toBe("     ⎿  second");
+    await waiting;
+    expect(x.widgetLines()?.[1]).toMatch(/^└─ ✓ tagged {2}exit 0 after 0:0\d$/u);
+    await x.commands.get("bg").handler("widget off", x.ctx);
+    expect(x.widgets.has("pi-bg")).toBe(false);
+    expect(x.status.get("bg")).toMatch(/^bg: tagged ✓$/u);
+    await x.commands.get("bg").handler("widget on", x.ctx);
+    expect(x.status.get("bg")).toBeUndefined();
     await x.shutdown();
   });
 

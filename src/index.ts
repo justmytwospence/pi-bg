@@ -6,7 +6,9 @@
 // - bg_wait keeps the turn going until a job ends, so the agent is visibly working (in pi, herdr,
 //   tmux) while it waits. It returns early when the user types, on Esc, or after its timeout.
 // - bg_logs reads a log (or lists the tasks); bg_kill stops one.
-// - Footer status `bg` (pi-status-footer gives it a row), `/bg` to list, view, stop and rerun.
+// - A live widget above the editor (like pi-subagents'): each running task with its latest log
+//   line, then what ended. With the widget off (`/bg widget off`) or outside the TUI, a footer status
+//   `bg` instead (pi-status-footer gives it a row). `/bg` to list, view, stop and rerun.
 //
 // Other extensions, through pi.events (all optional; without listeners nothing happens):
 //   emits  herdr:background {active,label,id}  while an agent job runs that will wake the agent
@@ -17,14 +19,41 @@
 //          bg:killed {id,command,cwd}          after bg_kill or /bg stops a task
 //   reads  bg:external {id,label,state,summary?}  outside work bg_wait can wait on (state running|done|failed)
 //          bg:probe {reply}                    reply() when pi-bg is loaded
+import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { elapsed, footerStatus, header, marimoNote, nameFromCommand, outcome, report, runtime, taskLine } from "./format.ts";
 import { bounded, grep, head, tail } from "./log.ts";
-import { type Kind, type Task, type TaskEvent, parsePattern, registry } from "./registry.ts";
+import { type Kind, type Task, type TaskEvent, bgDir, parsePattern, registry } from "./registry.ts";
 import { LogViewer } from "./viewer.ts";
+import { TasksWidget } from "./widget.ts";
+
+/** `~/.pi/agent/bg/settings.json`: `{ "widget": false }` turns the widget off (the footer status shows instead). */
+function loadWidgetSetting(): boolean {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(bgDir(), "settings.json"), "utf8"))?.widget !== false;
+  } catch {
+    return true;
+  }
+}
+
+function saveWidgetSetting(on: boolean): void {
+  try {
+    fs.mkdirSync(bgDir(), { recursive: true });
+    const file = path.join(bgDir(), "settings.json");
+    let data: Record<string, unknown> = {};
+    try {
+      data = JSON.parse(fs.readFileSync(file, "utf8")) ?? {};
+    } catch {
+      // A new file.
+    }
+    fs.writeFileSync(file, `${JSON.stringify({ ...data, widget: on }, null, 2)}\n`);
+  } catch {
+    // The setting still applies to this session.
+  }
+}
 
 const STARTUP_WAIT_MS = 1_500;
 const WAIT_DEFAULT_S = 1_800;
@@ -97,6 +126,19 @@ export default function piBg(pi: ExtensionAPI) {
   let statusTimer: ReturnType<typeof setInterval> | undefined;
   let lastStatus: string | undefined;
   let herdrActive = false;
+  let widgetOn = loadWidgetSetting();
+  /** The tasks a bg_wait is waiting on. */
+  const waitingIds = (): Set<string> => {
+    const ids = new Set<string>();
+    for (const w of waiters) {
+      if (w.silent) continue;
+      for (const id of w.targets) ids.add(id);
+      if (w.any) for (const t of reg.running()) if (t.kind === "job") ids.add(t.id);
+    }
+    return ids;
+  };
+  const widget = new TasksWidget({ tasks: () => reg.list(), waiting: waitingIds });
+  const widgetShown = () => widgetOn && ctx?.mode === "tui";
 
   const emit = (channel: string, data: unknown) => {
     try {
@@ -123,7 +165,7 @@ export default function piBg(pi: ExtensionAPI) {
 
   const updateStatus = () => {
     if (!attached || !ctx?.hasUI) return;
-    const s = footerStatus(reg.list());
+    const s = widgetShown() ? undefined : footerStatus(reg.list());
     if (s === lastStatus) return;
     lastStatus = s;
     ctx.ui.setStatus("bg", s);
@@ -147,6 +189,7 @@ export default function piBg(pi: ExtensionAPI) {
 
   const refresh = () => {
     updateStatus();
+    widget.update();
     syncHolds();
     emit("bg:tasks", { tasks: snapshot() });
   };
@@ -295,6 +338,7 @@ export default function piBg(pi: ExtensionAPI) {
       const adopted = reg.sweep(c.cwd);
       if (adopted.length && c.hasUI) c.ui.notify(`bg: adopted kept service${adopted.length > 1 ? "s" : ""} ${adopted.map((t) => t.name).join(", ")}`, "info");
     }
+    widget.setUI(widgetShown() ? (c.ui as any) : undefined);
     unsubscribe?.();
     unsubscribe = reg.subscribe(onTask);
     for (const t of reg.list()) if (t.pendingWake) wake(t, t.pendingWake);
@@ -319,6 +363,7 @@ export default function piBg(pi: ExtensionAPI) {
   pi.on("session_shutdown", async (event) => {
     if (statusTimer) clearInterval(statusTimer);
     statusTimer = undefined;
+    widget.dispose();
     for (const w of [...waiters]) w.resolve("aborted");
     for (const id of holds) emit("herdr:background", { active: false, id: `bg:${id}` });
     holds.clear();
@@ -449,6 +494,7 @@ export default function piBg(pi: ExtensionAPI) {
         if (++ticks % 4 === 0) setWorking();
         return undefined;
       });
+      widget.update();
       const reason = await done;
       if (c.hasUI) c.ui.setWorkingMessage();
       refresh();
@@ -545,9 +591,9 @@ export default function piBg(pi: ExtensionAPI) {
   };
 
   pi.registerCommand("bg", {
-    description: "Background tasks: list, view logs, stop, rerun (`/bg run <command>`, `/bg kill <id>`, `/bg clear`)",
+    description: "Background tasks: list, view logs, stop, rerun (`/bg run <command>`, `/bg kill <id>`, `/bg clear`, `/bg widget on|off`)",
     getArgumentCompletions: (prefix) => {
-      const subs = ["run ", "kill ", "clear"].filter((s) => s.startsWith(prefix));
+      const subs = ["run ", "kill ", "clear", "widget on", "widget off"].filter((s) => s.startsWith(prefix));
       return subs.length ? subs.map((s) => ({ value: s, label: s.trim() })) : null;
     },
     handler: async (args, c) => {
@@ -563,6 +609,16 @@ export default function piBg(pi: ExtensionAPI) {
         if (!t || t.status !== "running") return c.ui.notify(`No running task matches "${arg}".`, "warning");
         await stopTask(t, "user");
         return c.ui.notify(`bg: stopped ${t.name}`, "info");
+      }
+      if (sub === "widget") {
+        const want = rest[0] === "on" ? true : rest[0] === "off" ? false : !widgetOn;
+        widgetOn = want;
+        saveWidgetSetting(want);
+        widget.setUI(widgetShown() ? (c.ui as any) : undefined);
+        // Force the next status write (to set it, or to clear it).
+        lastStatus = "\u0000";
+        refresh();
+        return c.ui.notify(`bg: widget ${want ? "on" : "off (footer status instead)"}`, "info");
       }
       if (sub === "clear") {
         let n = 0;

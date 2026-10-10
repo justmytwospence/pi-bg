@@ -36,13 +36,26 @@ crashed has its leftovers killed by the next one. Logs older than a week are del
 
 ## UI
 
-- **Footer** status `bg`: `bg: tests 2:14 · vite ready · lint ✗`: running jobs, services, then
-  what ended in the last minute (`✓`, `✗`, `■` stopped). [pi-status-footer](https://github.com/justmytwospence/pi-status-footer)
+- **Widget** above the editor, like pi-subagents': each running task (spinner, name, kind, time,
+  `waiting` while a `bg_wait` is on it, `yours` for `/bg run`, `kept`, the command) with its latest
+  log line beneath, then what ended (8 s after success, 20 s after a failure or stop, with the last
+  line of a failure). It hides when nothing is left to show.
+
+  ```
+  ● Background  1 running, 1 service
+  ├─ ⠋ tests  job · 2:14 · waiting · npm test
+  │    ⎿  ✓ 212 passed, 3 skipped
+  ├─ ● vite  service · ready 0:34 · npm run dev
+  │    ⎿  Local: http://localhost:5173/
+  └─ ✗ lint  exit 1 after 0:10 · src/a.ts:3 unused import
+  ```
+- **Footer** status `bg` instead, with `/bg widget off` (saved in `~/.pi/agent/bg/settings.json`)
+  or outside the TUI: `bg: tests 2:14 · vite ready · lint ✗`. [pi-status-footer](https://github.com/justmytwospence/pi-status-footer)
   gives it a row of its own.
 - **`/bg`**: pick a task, then view its log (a live overlay: ↑↓ PgUp/PgDn g/G, `x` twice stops,
   Esc closes), stop, rerun, follow it in a herdr split, or put its log path in the editor.
   `/bg run <command>` starts a job yourself (it notifies you when it ends and does not wake the
-  agent), `/bg kill <id>`, `/bg clear` hides ended tasks.
+  agent), `/bg kill <id>`, `/bg clear` hides ended tasks, `/bg widget on|off`.
 
 ## Other extensions
 

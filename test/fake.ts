@@ -39,6 +39,7 @@ export function fakeCtx(cwd: string) {
   const notes: string[] = [];
   const working: (string | undefined)[] = [];
   const state = { pending: false };
+  const widgets = new Map<string, any>();
   const ctx = {
     mode: "tui",
     hasUI: true,
@@ -47,13 +48,21 @@ export function fakeCtx(cwd: string) {
     hasPendingMessages: () => state.pending,
     ui: {
       setStatus: (k: string, v: string | undefined) => status.set(k, v),
+      setWidget: (k: string, v: any) => (v ? widgets.set(k, v) : widgets.delete(k)),
       notify: (m: string) => notes.push(m),
       setWorkingMessage: (m?: string) => working.push(m),
       select: async () => undefined,
       pasteToEditor: () => {},
     },
   };
-  return { ctx, status, notes, working, state };
+  /** The widget's current lines, rendered at `width` with a plain theme. */
+  const widgetLines = (key = "pi-bg", width = 200): string[] | undefined => {
+    const factory = widgets.get(key);
+    if (!factory) return undefined;
+    const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+    return factory({ requestRender: () => {} }, theme).render(width);
+  };
+  return { ctx, status, notes, working, state, widgets, widgetLines };
 }
 
 export async function until(cond: () => boolean, ms = 5_000): Promise<void> {
