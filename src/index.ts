@@ -20,7 +20,15 @@
 //          bg:tasks {tasks}                    a snapshot after every change
 //          bg:killed {id,command,cwd}          after bg_kill or /bg stops a task
 //   reads  bg:external {id,label,state,summary?}  outside work bg_wait can wait on (state running|done|failed)
+//          bg:annotate {task,by,detail?,wait?}  what another extension knows about a task (pi-marimo: the
+//                                              kernel state of the notebook a server serves or a job drives);
+//                                              `wait` names outside work that bg_wait on the task waits for
+//                                              once it is up, and that bg_logs lists under the task. No
+//                                              detail clears it.
 //          bg:probe {reply}                    reply() when pi-bg is loaded
+//
+// marimo without pi-marimo (marimo.ts): a `marimo edit nb.py` service is named `marimo nb.py` and is
+// ready when marimo prints its URL.
 import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -34,6 +42,7 @@ import { type DialogResult, TasksDialog } from "./dialog.ts";
 import { FULL_SCREEN } from "./frame.ts";
 import { PillView } from "./pill.ts";
 import { LogViewer } from "./viewer.ts";
+import { MARIMO_READY, marimoName, marimoServer } from "./marimo.ts";
 
 const STARTUP_WAIT_MS = 1_500;
 const WAIT_DEFAULT_S = 1_800;
@@ -42,6 +51,13 @@ const LOGS_DEFAULT = 60;
 const LOGS_MAX = 400;
 const LOGS_BYTES = 12_000;
 const EXTERNAL_KEEP_MS = 10 * 60_000;
+
+/** What another extension says about a task (bg:annotate). */
+export interface Annotation {
+  by: string;
+  detail: string;
+  wait: string[];
+}
 
 export interface External {
   id: string;
@@ -98,6 +114,20 @@ const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], de
 export default function piBg(pi: ExtensionAPI) {
   const reg = registry();
   const externals = new Map<string, External>();
+  const annotations = new Map<string, Annotation>();
+  /** Outside work by id; `marimo:fit.py` also finds `marimo:nb/fit.py` when that is the only match. */
+  const findExternal = (id: string): External | undefined => {
+    const exact = externals.get(id);
+    if (exact) return exact;
+    const colon = id.indexOf(":");
+    if (colon < 0) return undefined;
+    const [prefix, rest] = [id.slice(0, colon + 1), id.slice(colon + 1)];
+    const hits = [...externals.values()].filter((x) => x.id.startsWith(prefix) && x.id.endsWith(`/${rest}`));
+    const running = hits.filter((x) => x.state === "running");
+    return running.length === 1 ? running[0] : hits.length === 1 ? hits[0] : undefined;
+  };
+  /** A running task's annotation. */
+  const noteOf = (t: Task): Annotation | undefined => (t.status === "running" ? annotations.get(t.id) : undefined);
   const waiters = new Set<Waiter>();
   /** Ids whose herdr:background hold is active. */
   const holds = new Set<string>();
@@ -154,7 +184,7 @@ export default function piBg(pi: ExtensionAPI) {
       [...reg.running(), ...reg.list().filter((t) => t.status !== "running").sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))].map((t) => ({
         key: t.id,
         label: t.name,
-        detail: t.command.replace(/\s+/gu, " ").trim(),
+        detail: [noteOf(t)?.detail, t.command.replace(/\s+/gu, " ").trim()].filter(Boolean).join(" · "),
         status: entryStatus(t),
         stats:
           t.status === "running"
@@ -399,6 +429,18 @@ export default function piBg(pi: ExtensionAPI) {
 
   const externalLine = (x: External) => `${x.label} (${x.id}): ${x.state}${x.summary ? ` · ${x.summary}` : ""}`;
 
+  pi.events.on("bg:annotate", (data) => {
+    const d = data as { task?: unknown; by?: unknown; detail?: unknown; wait?: unknown } | undefined;
+    if (typeof d?.task !== "string" || !reg.tasks.has(d.task)) return;
+    if (typeof d.detail !== "string" || !d.detail) annotations.delete(d.task);
+    else {
+      const wait = Array.isArray(d.wait) ? d.wait.filter((w): w is string => typeof w === "string") : [];
+      annotations.set(d.task, { by: typeof d.by === "string" ? d.by : "", detail: d.detail, wait });
+    }
+    // Only what draws: a bg:tasks snapshot here would bounce back to the annotator.
+    pill.update();
+    emit(ACTIVITY_CHANGED, { id: section.id });
+  });
   pi.events.on("bg:external", (data) => {
     const d = data as Partial<External> | undefined;
     if (!d?.id || typeof d.id !== "string") return;
@@ -500,7 +542,8 @@ export default function piBg(pi: ExtensionAPI) {
     parameters: RunParams,
     renderCall(args, theme) {
       const a = args as { command?: string; kind?: string; name?: string };
-      const name = a.name || nameFromCommand(a.command ?? "");
+      const server = a.kind === "service" ? marimoServer(a.command ?? "") : undefined;
+      const name = a.name || (server ? marimoName(server) : nameFromCommand(a.command ?? ""));
       return new Text(`${theme.fg("toolTitle", theme.bold("bg_run"))} ${theme.fg("accent", name)} ${theme.fg("muted", `(${a.kind ?? "?"})`)} ${theme.fg("dim", (a.command ?? "").replace(/\s+/gu, " "))}`, 0, 0);
     },
     async execute(_id, params, _signal, _onUpdate, c) {
@@ -509,16 +552,18 @@ export default function piBg(pi: ExtensionAPI) {
       if (params.ready) parsePattern(params.ready);
       if (params.keep && kind !== "service") throw new Error("`keep` is for services.");
       if (params.timeout && kind !== "job") throw new Error("`timeout` is for jobs; a service runs until it is stopped.");
+      // A marimo server without pi-marimo's help still gets a name and a ready line.
+      const server = kind === "service" ? marimoServer(params.command) : undefined;
       const cwd = params.cwd ? path.resolve(c.cwd, params.cwd.replace(/^~(?=\/|$)/u, process.env.HOME ?? "~")) : c.cwd;
       if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`No such directory: ${cwd}`);
       const task = reg.start({
         command: params.command,
-        name: params.name?.trim() || nameFromCommand(params.command),
+        name: params.name?.trim() || (server ? marimoName(server) : nameFromCommand(params.command)),
         kind,
         cwd,
         sessionId: c.sessionManager.getSessionId(),
         origin: "agent",
-        ready: params.ready,
+        ready: params.ready ?? (server ? MARIMO_READY : undefined),
         timeoutSec: params.timeout,
         keep: params.keep,
       });
@@ -545,7 +590,7 @@ export default function piBg(pi: ExtensionAPI) {
   pi.registerTool({
     name: "bg_wait",
     label: "Wait",
-    description: `Wait inside this turn for a background job to end (or a service to become ready, when named), then get its outcome and the end of its log. Without id, waits for whichever running job ends first. \`id\` may also name outside work other extensions report, such as \`marimo:<file>\` for a running marimo notebook (pi-marimo). Returns early when the user sends a message, on Esc, or after \`timeout\` seconds (default ${WAIT_DEFAULT_S}); the job keeps running and still wakes you when it ends.`,
+    description: `Wait inside this turn for a background job to end (or a service to become ready, when named), then get its outcome and the end of its log. Without id, waits for whichever running job ends first. \`id\` may also name outside work other extensions report, such as \`marimo:<file>\` for a running marimo notebook (pi-marimo); for a marimo server that is up, with pi-marimo installed, its id waits for the notebook's running cells. Returns early when the user sends a message, on Esc, or after \`timeout\` seconds (default ${WAIT_DEFAULT_S}); the job keeps running and still wakes you when it ends.`,
     promptSnippet: "Wait for a background job (keeps the turn working)",
     parameters: WaitParams,
     renderCall(args, theme) {
@@ -557,8 +602,11 @@ export default function piBg(pi: ExtensionAPI) {
       const targets = new Set<string>();
       let any = false;
       if (params.id) {
-        const x = externals.get(params.id);
+        const x = findExternal(params.id);
         const t = x ? undefined : reg.find(params.id);
+        // A server that is up, with outside work an extension tied to it (a marimo kernel): wait for that.
+        const tied = t && t.status === "running" && t.kind === "service" && (t.ready || !t.readyPattern) ? (noteOf(t)?.wait ?? []) : [];
+        const tiedRunning = tied.map(findExternal).filter((e): e is External => e?.state === "running");
         if (x) {
           if (x.state !== "running") return text(externalLine(x));
           targets.add(x.id);
@@ -569,6 +617,11 @@ export default function piBg(pi: ExtensionAPI) {
           t.delivered = true;
           refresh();
           return text(report(t));
+        } else if (tiedRunning.length) {
+          for (const e of tiedRunning) targets.add(e.id);
+        } else if (tied.length) {
+          t.readyDelivered = true;
+          return text(`${report(t)}\n\nNothing is running in it: ${noteOf(t)?.detail}.`);
         } else if (t.kind === "service" && t.ready) {
           t.readyDelivered = true;
           return text(report(t));
@@ -590,7 +643,7 @@ export default function piBg(pi: ExtensionAPI) {
       const names = () => (any ? agentJobs() : [...targets].map((id) => reg.tasks.get(id)).filter((t): t is Task => !!t));
       const label = () => {
         const ts = names();
-        if (!ts.length) return externals.get([...targets][0] ?? "")?.label ?? "outside work";
+        if (!ts.length) return [...targets].map((id) => externals.get(id)?.label ?? id).join(" · ") || "outside work";
         return ts.map((t) => `${t.name} ${runtime(t)}`).join(" · ");
       };
       const started = Date.now();
@@ -638,8 +691,14 @@ export default function piBg(pi: ExtensionAPI) {
     async execute(_id, params) {
       if (!params.id) {
         const tasks = reg.list();
-        const lines = tasks.map((t) => taskLine(t));
-        for (const x of externals.values()) if (x.state === "running") lines.push(`${x.id}  ${x.label}  outside work  running`);
+        const tied = new Set<string>();
+        const lines = tasks.map((t) => {
+          const note = noteOf(t);
+          if (!note) return taskLine(t);
+          for (const id of note.wait) tied.add(findExternal(id)?.id ?? id);
+          return `${taskLine(t)}\n    ${note.detail}${note.wait.length ? ` (bg_wait ${t.id} waits for ${note.wait.join(", ")})` : ""}`;
+        });
+        for (const x of externals.values()) if (x.state === "running" && !tied.has(x.id)) lines.push(`${x.id}  ${x.label}  outside work  running`);
         return text(lines.length ? lines.join("\n") : "No background tasks.");
       }
       const t = reg.find(params.id);

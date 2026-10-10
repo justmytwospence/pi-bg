@@ -313,4 +313,34 @@ describe("pi-bg", () => {
     expect(t?.status).toBe("killed");
     expect(x.sent).toEqual([]);
   });
+
+  it("marimo: a server gets its name and ready line alone; with an annotation, its row shows the kernel and bg_wait waits for the cells", async () => {
+    const x = await load();
+    // A fake marimo server: what `marimo edit --no-token nb/fit.py` prints, then it serves.
+    const cmd = "sleep 0.3; echo '  ➜  URL: http://localhost:2718'; sleep 30 # marimo edit --no-token nb/fit.py";
+    const start = x.textOf(await x.call("bg_run", { command: cmd, kind: "service" }));
+    expect(start).toMatch(/^Started marimo fit\.py \(service /u);
+    const id = /service (\w+),/u.exec(start)?.[1] ?? "";
+    await until(() => x.emitted.some((e) => e.channel === "bg:tasks" && e.data.tasks.some((t: any) => t.id === id && t.ready)), 3_000);
+    // Up, and nothing tied to it: bg_wait returns at once.
+    expect(x.textOf(await x.call("bg_wait", { id }))).toMatch(/ready/u);
+    // pi-marimo: the notebook it serves runs a cell.
+    x.pi.events.emit("bg:external", { id: "marimo:nb/fit.py", label: "fit.py: Model fit", state: "running" });
+    x.pi.events.emit("bg:annotate", { task: id, by: "pi-marimo", detail: "fit.py: running Model fit", wait: ["marimo:nb/fit.py"] });
+    const list = x.textOf(await x.call("bg_logs", {}));
+    expect(list).toMatch(/marimo fit\.py[^\n]*\n {4}fit\.py: running Model fit \(bg_wait \w+ waits for marimo:nb\/fit\.py\)/u);
+    // Listed under the task, not again on its own.
+    expect(list).not.toMatch(/outside work/u);
+    setTimeout(() => x.pi.events.emit("bg:external", { id: "marimo:nb/fit.py", label: "fit.py", state: "done", summary: "ran 0:01" }), 300);
+    expect(x.textOf(await x.call("bg_wait", { id }))).toBe("fit.py (marimo:nb/fit.py): done · ran 0:01");
+    // The short form finds the nested notebook too.
+    expect(x.textOf(await x.call("bg_wait", { id: "marimo:fit.py" }))).toBe("fit.py (marimo:nb/fit.py): done · ran 0:01");
+    // Idle now: bg_wait on the server says so.
+    x.pi.events.emit("bg:annotate", { task: id, by: "pi-marimo", detail: "fit.py: idle", wait: ["marimo:nb/fit.py"] });
+    expect(x.textOf(await x.call("bg_wait", { id }))).toMatch(/Nothing is running in it: fit\.py: idle\./u);
+    // No detail clears it.
+    x.pi.events.emit("bg:annotate", { task: id, by: "pi-marimo" });
+    expect(x.textOf(await x.call("bg_logs", {}))).not.toMatch(/idle/u);
+    await x.shutdown();
+  }, 15_000);
 });

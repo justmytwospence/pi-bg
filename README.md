@@ -94,6 +94,7 @@ All through `pi.events`; with nothing listening, nothing happens.
 | `bg:tasks` | emits | `{ tasks }` | a snapshot after every change: id, name, kind, command, cwd, status, ready, origin, keep, `willWake`, logPath |
 | `bg:killed` | emits | `{ id, command, cwd }` | after a task is stopped |
 | `bg:external` | reads | `{ id, label, state, summary? }` | outside work `bg_wait <id>` can wait on (`state`: `running`, `done`, `failed`), e.g. a busy marimo notebook |
+| `bg:annotate` | reads | `{ task, by, detail?, wait? }` | what another extension knows about a task: `detail` goes in its row and under it in `bg_logs`; `wait` names outside work that `bg_wait <task>` waits for once the task is up (a server's notebook kernel). No `detail` clears it |
 | `bg:probe` | reads | `{ reply }` | `reply()` when pi-bg is loaded |
 | `activity:section`, `activity:changed`, `activity:gone` | both | `{ section }`, `{ id }` | sources of background work: ours (the pill, entries, the dialog) for a host to show under the prompt; others' (pi-subagents' runs) for the dialog; see `src/activity.ts` |
 | `activity:host` | reads | `{}` | a host is ready: offer our source again |
@@ -106,6 +107,16 @@ the `$bg` token names the job until it wakes the agent.
 is a job (`bg_run` the call, then `bg_wait`). Stopping that job stops the client, not the cells:
 `bg_kill` says so for marimo-pair commands. While it runs, other `execute-code` calls to the same
 notebook queue behind it.
+
+A marimo server (`bg_run` of `marimo edit nb.py`, `uv run marimo edit --no-token nb.py`,
+`uvx marimo run app.py`, ...) as a service is named `marimo nb.py` and is ready when marimo prints
+its URL, unless you give a name or a `ready` pattern. With
+[pi-marimo](https://github.com/justmytwospence/pi-marimo) installed, pi-marimo takes over the rest:
+the server's row, and the row of a job whose marimo-pair calls target a followed notebook, shows
+its kernel (`nb.py: running Model fit · 2 queued`, `nb.py: idle · 1 error`); `bg_logs` lists the
+notebook under that task instead of on its own; and `bg_wait` on a server that is up waits for its
+running cells instead of returning at once. A notebook's `bg_wait` id is `marimo:` and its path
+from the cwd; `marimo:<file>` finds it too when only one followed notebook has that name.
 
 ## Development
 

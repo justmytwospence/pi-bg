@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { elapsed, footerStatus, marimoNote, nameFromCommand } from "../src/format.ts";
 import { LogFollower, bounded, cleanLine, grep, head, tail } from "../src/log.ts";
 import { type Task, parsePattern } from "../src/registry.ts";
+import { MARIMO_READY, marimoName, marimoServer } from "../src/marimo.ts";
 
 const task = (over: Partial<Task>): Task => ({
   id: "abc12",
@@ -96,5 +97,24 @@ describe("log", () => {
   it("bounds output from the end", () => {
     const r = bounded(["aaaa", "bbbb", "cccc"], 10);
     expect(r).toEqual({ text: "bbbb\ncccc", dropped: 1 });
+  });
+});
+
+describe("marimo servers", () => {
+  it("finds the mode and the notebook in the usual spellings", () => {
+    expect(marimoServer("marimo edit nb.py")).toEqual({ mode: "edit", file: "nb.py" });
+    expect(marimoServer("uv run marimo edit --no-token --port 2719 notebooks/fit.py")).toEqual({ mode: "edit", file: "notebooks/fit.py" });
+    expect(marimoServer("cd x && uvx marimo run app.py --headless")).toEqual({ mode: "run", file: "app.py" });
+    expect(marimoServer("python -m marimo edit")).toEqual({ mode: "edit" });
+    expect(marimoServer(".venv/bin/marimo -q edit 'a b.py'")?.mode).toBe("edit");
+    expect(marimoServer("marimo export html nb.py")).toBeUndefined();
+    expect(marimoServer("npm run dev")).toBeUndefined();
+    expect(marimoName({ mode: "edit", file: "notebooks/fit.py" })).toBe("marimo fit.py");
+    expect(marimoName({ mode: "edit" })).toBe("marimo edit");
+  });
+  it("is ready on marimo's URL line", () => {
+    const re = parsePattern(MARIMO_READY);
+    expect(re.test("        ➜  URL: http://localhost:2718?access_token=abc")).toBe(true);
+    expect(re.test("        ➜  Network: http://192.168.1.2:2718")).toBe(false);
   });
 });
