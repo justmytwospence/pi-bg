@@ -389,7 +389,7 @@ export default function piBg(pi: ExtensionAPI) {
   pi.registerTool({
     name: "bg_wait",
     label: "Wait",
-    description: `Wait inside this turn for a background job to end (or a service to become ready, when named), then get its outcome and the end of its log. Without id, waits for whichever running job ends first. `id` may also name outside work other extensions report, such as `marimo:<file>` for a running marimo notebook (pi-marimo). Returns early when the user sends a message, on Esc, or after \`timeout\` seconds (default ${WAIT_DEFAULT_S}); the job keeps running and still wakes you when it ends.`,
+    description: `Wait inside this turn for a background job to end (or a service to become ready, when named), then get its outcome and the end of its log. Without id, waits for whichever running job ends first. \`id\` may also name outside work other extensions report, such as \`marimo:<file>\` for a running marimo notebook (pi-marimo). Returns early when the user sends a message, on Esc, or after \`timeout\` seconds (default ${WAIT_DEFAULT_S}); the job keeps running and still wakes you when it ends.`,
     promptSnippet: "Wait for a background job (keeps the turn working)",
     parameters: WaitParams,
     renderCall(args, theme) {
